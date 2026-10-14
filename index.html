@@ -6,6 +6,7 @@
 <title>Петух vs Кот</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="https://unpkg.com/mqtt@4.3.7/dist/mqtt.min.js"></script>
 <style>
   :root {
     --bg: #14081f;
@@ -1018,7 +1019,7 @@
       } else startRound();
     }
     updateSpButtons();
-    if (net.role === 'host') sendSnapshot();
+    if (net.role === 'host' && net.conn && (net.transport !== 'mqtt' || frame % 2 === 0)) sendSnapshot();
   }
   const spBtns = [document.getElementById('sp1'), document.getElementById('sp2')];
   let endText = '';
@@ -1144,9 +1145,11 @@
     if (net.role) {
       const ms = pingMs == null ? null : Math.round(pingMs);
       const col = ms == null ? '#aaa' : ms < 80 ? '#7cff6a' : ms < 150 ? '#ffd23c' : '#ff4a4a';
-      c.fillStyle = 'rgba(0,0,0,.55)'; c.fillRect(352, 62, 96, 20);
-      ell(c, 364, 72, 4, 4, col);
-      txt(c, ms == null ? 'пинг …' : `пинг ${ms} мс`, 405, 78, 14, col, 'center', 3);
+      const via = net.transport === 'mqtt' ? ' · запасной' : '';
+      const bw = via ? 150 : 96;
+      c.fillStyle = 'rgba(0,0,0,.55)'; c.fillRect(400 - bw / 2, 62, bw, 20);
+      ell(c, 400 - bw / 2 + 12, 72, 4, 4, col);
+      txt(c, (ms == null ? 'пинг …' : `пинг ${ms} мс`) + via, 409, 78, 14, col, 'center', 3);
     }
     if (P && P.state !== 'ko') {
       c.save(); c.globalAlpha = 0.9;
@@ -1362,46 +1365,93 @@
   function inviteLink() {
     return BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?startapp=room_${net.code}` : `${location.origin}${location.pathname}?room=${net.code}`;
   }
-  function makePeer(id) {
-    if (!window.Peer) { netError('no-peerjs'); return null; }
-    const opts = { config: { iceServers: [
-      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
-      { urls: 'stun:stun.cloudflare.com:3478' },
-      { urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject' },
-    ] } };
-    const p = id ? new window.Peer(id, opts) : new window.Peer(opts);
+  // Two transports: PeerJS (WebRTC P2P, needs 0.peerjs.com) and an MQTT relay over public brokers
+  // (fallback when the PeerJS server is blocked or NAT kills P2P). Host listens on both;
+  // the first one the guest reaches wins and carries the whole match.
+  const FORCE_MQTT = /[?&]mqtt=1/.test(location.search);
+  const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
+  const ICE = { config: { iceServers: [
+    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject' },
+  ] } };
+  let lastErr = null, guestTimer = null;
+
+  function makePeer(id, onErr) {
+    if (FORCE_MQTT) return null;
+    if (!window.Peer) { onErr('no-peerjs'); return null; }
+    const p = id ? new window.Peer(id, ICE) : new window.Peer(ICE);
     p.on('error', (err) => {
       const type = (err && err.type) || 'unknown';
       console.warn('peer error', type, err && err.message);
-      if (type === 'unavailable-id' && net.role === 'host') { leaveOnline(); hostRoom(); return; }
-      netError(type, err && err.message);
+      onErr(type, err && err.message);
     });
     return p;
   }
-  function watchIce(conn) { // report NAT failures instead of hanging silently
+  function watchIce(conn, onFail) {
     const t0 = Date.now();
     const iv = setInterval(() => {
       const pc = conn.peerConnection;
       if (!net.role || conn.open || Date.now() - t0 > 20000) { clearInterval(iv); return; }
-      if (pc && (pc.iceConnectionState === 'failed' || pc.connectionState === 'failed')) { clearInterval(iv); netError('ice-failed'); }
+      if (pc && (pc.iceConnectionState === 'failed' || pc.connectionState === 'failed')) { clearInterval(iv); onFail('ice-failed'); }
     }, 500);
   }
+
+  // MQTT "connection": same shape as a PeerJS DataConnection (open / send / close)
+  function makeMqtt(code, role) {
+    const inT = `pvk/${code}/${role === 'host' ? 'g2h' : 'h2g'}`, outT = `pvk/${code}/${role === 'host' ? 'h2g' : 'g2h'}`;
+    const mc = { kind: 'mqtt', open: false, active: null, clients: [], anyUp: false,
+      send(m) { if (this.active) try { this.active.publish(outT, JSON.stringify(m), { qos: 0 }); } catch (e) {} },
+      sendAll(m) { for (const c of this.clients) if (c.connected) try { c.publish(outT, JSON.stringify(m), { qos: 0 }); } catch (e) {} },
+      close() { this.open = false; for (const c of this.clients) try { c.end(true); } catch (e) {} this.clients = []; },
+    };
+    if (!window.mqtt) { console.warn('mqtt lib missing'); return mc; }
+    for (const url of BROKERS) {
+      let c;
+      try { c = window.mqtt.connect(url, { clientId: 'pvk_' + Math.random().toString(36).slice(2, 10), clean: true, connectTimeout: 8000, reconnectPeriod: 2000, keepalive: 20 }); }
+      catch (e) { continue; }
+      mc.clients.push(c);
+      c.on('connect', () => { mc.anyUp = true; c.subscribe(inT, { qos: 0 }); });
+      c.on('error', (e) => console.warn('mqtt error', url, e && e.message));
+      c.on('message', (topic, payload) => {
+        let m; try { m = JSON.parse(payload.toString()); } catch (e) { return; }
+        mc.onMsg && mc.onMsg(m, c);
+      });
+    }
+    return mc;
+  }
+
   function hostRoom() {
     net.lastAction = () => hostRoom();
     const abc = 'abcdefghjkmnpqrstuvwxyz23456789';
     net.code = Array.from({ length: 5 }, () => abc[Math.floor(Math.random() * abc.length)]).join('');
-    net.role = 'host';
+    net.role = 'host'; net.transport = null; lastErr = null;
     lobby('Отправь приглашение другу и жди. Как только он зайдёт — бой начнётся.', net.code, true);
-    net.peer = makePeer('pvk-' + net.code);
-    if (!net.peer) return;
-    net.peer.on('connection', (conn) => {
-      if (net.conn && net.conn.open) { conn.close(); return; }
-      net.conn = conn;
-      watchIce(conn);
-      conn.on('open', () => { startOnlineMatch(); });
-      conn.on('data', onHostData);
-      conn.on('close', () => onPeerLeft());
+    const code = net.code;
+    // PeerJS listener
+    net.peer = makePeer('pvk-' + code, (type, msg) => {
+      if (type === 'unavailable-id' && !net.conn) { leaveOnline(); hostRoom(); return; }
+      lastErr = [type, msg];
+      setTimeout(() => { if (net.role === 'host' && net.code === code && !net.conn && !(net.mq && net.mq.anyUp)) netError(type, msg); }, 9000);
     });
+    if (net.peer) net.peer.on('connection', (conn) => {
+      conn.on('open', () => { if (!net.conn && net.role === 'host') { net.conn = conn; net.transport = 'peer'; startOnlineMatch(); } else conn.close(); });
+      conn.on('data', (m) => { if (net.conn === conn) onHostData(m); });
+      conn.on('close', () => { if (net.conn === conn) onPeerLeft(); });
+    });
+    // MQTT listener
+    net.mq = makeMqtt(code, 'host');
+    net.mq.onMsg = (m, client) => {
+      if (net.role !== 'host' || net.code !== code) return;
+      if (!net.conn) {
+        if (m.t === 'hello') { net.mq.active = client; net.mq.open = true; net.conn = net.mq; net.transport = 'mqtt'; startOnlineMatch(); }
+        return;
+      }
+      if (net.conn === net.mq && client === net.mq.active) onHostData(m);
+    };
+    setTimeout(() => { // nothing reachable at all
+      if (net.role === 'host' && net.code === code && !net.conn && !(net.mq && net.mq.anyUp) && !(net.peer && net.peer.open)) netError((lastErr && lastErr[0]) || 'network', lastErr && lastErr[1]);
+    }, 12000);
   }
   function startOnlineMatch() {
     show('lobby', false); show('result', false);
@@ -1413,32 +1463,59 @@
     if (!m || typeof m !== 'object') return;
     gotMsg();
     if (handlePing(m)) return;
+    if (m.t === 'hello') { netSend({ t: 'start', host: pick }); return; } // guest missed 'start'
     if (m.t === 'i') {
       if (['left', 'right', 'block', 'down'].includes(m.k)) net.rin[m.k] = !!m.on;
       else if (m.on && ['jump', 'light', 'heavy', 'sp1', 'sp2', 'dance', 'insult'].includes(m.k)) net.redge[m.k] = true;
     } else if (m.t === 'again' && phase === 'over') startOnlineMatch();
   }
+
   function joinRoom(code) {
     net.lastAction = () => joinRoom(code);
-    net.code = code; net.role = 'guest';
+    net.code = code; net.role = 'guest'; net.transport = null; lastErr = null;
     lobby('Подключаемся к комнате…', code, false);
-    net.peer = makePeer();
-    if (!net.peer) return;
-    net.peer.on('open', () => {
-      const conn = net.peer.connect('pvk-' + code, { reliable: true });
-      net.conn = conn;
-      const to = setTimeout(() => { if (!conn.open && net.role === 'guest') netError('timeout'); }, 15000);
-      conn.on('open', () => { clearTimeout(to); gotMsg(); });
-      watchIce(conn);
-      conn.on('data', onGuestData);
-      conn.on('close', () => onPeerLeft());
-    });
+    let mqttStarted = false;
+    const startMqtt = () => {
+      if (mqttStarted || net.role !== 'guest' || net.conn) return;
+      mqttStarted = true;
+      $('lobbyTxt').textContent = 'Пробуем запасной канал…';
+      const mq = makeMqtt(code, 'guest'); net.mq = mq;
+      mq.onMsg = (m, client) => {
+        if (net.role !== 'guest') return;
+        if (!net.conn && m.t === 'start') { mq.active = client; mq.open = true; net.conn = mq; net.transport = 'mqtt'; dropPeer(); }
+        if (net.conn === mq && client === mq.active) onGuestData(m);
+      };
+      const hello = setInterval(() => {
+        if (net.role !== 'guest' || net.conn) { clearInterval(hello); return; }
+        mq.sendAll({ t: 'hello' });
+      }, 700);
+    };
+    // PeerJS attempt
+    net.peer = makePeer(null, (type, msg) => { lastErr = [type, msg]; startMqtt(); });
+    if (net.peer) {
+      net.peer.on('open', () => {
+        const conn = net.peer.connect('pvk-' + code, { reliable: true });
+        watchIce(conn, (t) => { lastErr = [t]; startMqtt(); });
+        conn.on('data', (m) => {
+          if (!net.conn && m && m.t === 'start') { net.conn = conn; net.transport = 'peer'; if (net.mq) { net.mq.close(); net.mq = null; } }
+          if (net.conn === conn) onGuestData(m);
+        });
+        conn.on('close', () => { if (net.conn === conn) onPeerLeft(); });
+      });
+      setTimeout(startMqtt, 3000); // P2P too slow -> also try the relay
+    } else startMqtt();
+    clearTimeout(guestTimer);
+    guestTimer = setTimeout(() => {
+      if (net.role === 'guest' && net.code === code && !net.conn) netError((lastErr && lastErr[0]) || 'timeout', lastErr && lastErr[1]);
+    }, 20000);
   }
+  function dropPeer() { const p = net.peer; net.peer = null; try { p && p.destroy(); } catch (e) {} }
   function onGuestData(m) {
     if (!m || typeof m !== 'object') return;
     gotMsg();
     if (handlePing(m)) return;
     if (m.t === 'start') {
+      clearTimeout(guestTimer);
       pick = m.host === 'rooster' ? 'cat' : 'rooster';
       SPECIALS[pick].forEach((sp, i) => { $('sp' + (i + 1) + 't').textContent = sp.label; });
       particles = []; popups = []; projectiles = []; P = A = null;
@@ -1453,9 +1530,11 @@
     lobby('Соперник отключился 🚪', '');
   }
   function leaveOnline() {
-    const p = net.peer;
-    net.role = null; net.conn = null; net.peer = null; lastRecv = 0; pingMs = null;
+    const p = net.peer, mq = net.mq;
+    net.role = null; net.conn = null; net.peer = null; net.mq = null; net.transport = null; lastRecv = 0; pingMs = null;
+    clearTimeout(guestTimer);
     try { p && p.destroy(); } catch (e) {}
+    try { mq && mq.close(); } catch (e) {}
   }
   $('share').addEventListener('click', () => {
     const link = inviteLink(), text = 'Го драться: петух боец vs кот 🥊 Заходи в мою комнату!';
