@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Петух vs Кот</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
-<script src="https://unpkg.com/mqtt@4.3.7/dist/mqtt.min.js"></script>
 <style>
   :root {
     --bg: #14081f;
@@ -1019,7 +1018,7 @@
       } else startRound();
     }
     updateSpButtons();
-    if (net.role === 'host' && net.conn && (net.transport !== 'relay' || frame % 4 === 0)) sendSnapshot();
+    if (net.role === 'host' && net.conn && (net.transport !== 'relay' || frame % 2 === 0)) sendSnapshot();
   }
   const spBtns = [document.getElementById('sp1'), document.getElementById('sp2')];
   let endText = '';
@@ -1145,8 +1144,8 @@
     if (net.role) {
       const ms = pingMs == null ? null : Math.round(pingMs);
       const col = ms == null ? '#aaa' : ms < 80 ? '#7cff6a' : ms < 150 ? '#ffd23c' : '#ff4a4a';
-      const via = net.transport === 'relay' ? ' · запасной' : net.transport === 'rtc' ? ' · напрямую' : '';
-      const bw = via ? 150 : 96;
+      const via = viaLabel();
+      const bw = via ? 170 : 96;
       c.fillStyle = 'rgba(0,0,0,.55)'; c.fillRect(400 - bw / 2, 62, bw, 20);
       ell(c, 400 - bw / 2 + 12, 72, 4, 4, col);
       txt(c, (ms == null ? 'пинг …' : `пинг ${ms} мс`) + via, 409, 78, 14, col, 'center', 3);
@@ -1350,7 +1349,7 @@
   }
   function guestTick() { // cosmetics only; the host owns the simulation
     frame++;
-    const k = net.transport === 'relay' ? 0.3 : 0.65;          // smooth out jitter / low relay rate
+    const k = net.transport === 'relay' ? 0.5 : 0.65;          // smooth out jitter / lower relay rate
     for (const f of [P, A]) if (f.tx != null) { f.x += (f.tx - f.x) * k; f.y += (f.ty - f.y) * k; }
     for (const f of [P, A]) if (f.state === 'taunt' && frame % 12 === 0) particles.push({ x: f.x + (Math.random() - 0.5) * 60, y: f.y - 230, vx: (Math.random() - 0.5) * 2, vy: -1.2, life: 40, col: '#ff8be0', kind: 'note', rot: 0 });
     for (const f of [P, A]) if (f.burn > 0 && frame % 4 === 0) particles.push({ x: f.x + (Math.random() - 0.5) * 50, y: f.y - 60 - Math.random() * 150, vx: 0, vy: -1.5, life: 22, col: Math.random() < 0.5 ? '#ff7a00' : '#ffd23c', kind: 'spark' });
@@ -1363,9 +1362,10 @@
 
   const ERR_HINT = {
     'peer-unavailable': 'Комната не найдена: друг закрыл лобби или код неверный.',
-    'network': 'Не достучались до серверов связи (EMQX / HiveMQ). Проверь интернет, попробуй с VPN или без.',
-    'timeout': 'Комната нашлась, но соединиться не вышло за минуту. Попробуй ещё раз.',
-    'no-mqtt': 'Не загрузился модуль связи (unpkg.com). Проверь интернет/VPN и открой игру заново.',
+    'room-full': 'В этой комнате уже дерутся двое.',
+    'relay': 'Не достучались до сервера игры. Проверь интернет; если включён VPN — попробуй без него (и наоборот).',
+    'relay-closed': 'Сервер разорвал связь. Попробуй ещё раз.',
+    'timeout': 'Комната нашлась, но бой так и не начался. Пусть друг вернётся в игру и попробуйте снова.',
   };
   function netError(type, msg) {
     const hint = ERR_HINT[type] || 'Не удалось соединиться 😿';
@@ -1386,47 +1386,43 @@
     return BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?startapp=room_${net.code}` : `${location.origin}${location.pathname}?room=${net.code}`;
   }
   // ===== Transport =====
-  // Signaling (finding the room + WebRTC offer/answer/ICE) goes over public MQTT brokers (WSS) —
-  // a handful of tiny messages. The match itself then runs over a DIRECT WebRTC DataChannel.
-  // Only if P2P can't be punched through does the MQTT link become a low-rate relay.
-  const FORCE_RELAY = /[?&]mqtt=1/.test(location.search);
-  const BROKERS = ['wss://broker.emqx.io:8084/mqtt', 'wss://broker.hivemq.com:8884/mqtt'];
-  const RTC_CFG = { iceServers: [
-    { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
-    { urls: 'stun:stun.cloudflare.com:3478' },
-    { urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject' },
-  ] };
-  const RTC_WAIT = 9000; // host waits this long for P2P before falling back to the relay
+  // Our own relay (Cloudflare Worker, see relay/): one WebSocket per player does the signaling and,
+  // when P2P can't be punched through, carries the match. Match traffic otherwise runs over a direct
+  // WebRTC DataChannel (P2P, or Cloudflare TURN at the nearest PoP via /turn credentials).
+  const RELAY_URL = new URLSearchParams(location.search).get('relayUrl') || 'https://petuh-vs-kot.ifonpromax.deno.net';
+  const FORCE_RELAY = /[?&]relay=1/.test(location.search);
+  const RTC_WAIT = 8000; // host waits this long for P2P/TURN before settling on the WS relay
   let lastErr = null, guestTimer = null, snapSeq = 0, lastSeq = -1;
 
-  // MQTT link: open / send / sendAll / close (+ onMsg(m, client))
-  function makeMqtt(code, role) {
-    const inT = `pvk2/${code}/${role === 'host' ? 'g2h' : 'h2g'}`, outT = `pvk2/${code}/${role === 'host' ? 'h2g' : 'g2h'}`;
-    const mc = { kind: 'relay', open: false, active: null, clients: [], anyUp: false,
-      send(m) { if (this.active) try { this.active.publish(outT, JSON.stringify(m), { qos: 0 }); } catch (e) {} },
-      sendAll(m) { for (const c of this.clients) if (c.connected) try { c.publish(outT, JSON.stringify(m), { qos: 0 }); } catch (e) {} },
-      close() { this.open = false; for (const c of this.clients) try { c.end(true); } catch (e) {} this.clients = []; },
-    };
-    if (!window.mqtt) { lastErr = ['no-mqtt']; return mc; }
-    for (const url of BROKERS) {
-      let c;
-      try { c = window.mqtt.connect(url, { clientId: 'pvk_' + Math.random().toString(36).slice(2, 10), clean: true, connectTimeout: 8000, reconnectPeriod: 2000, keepalive: 20 }); }
-      catch (e) { continue; }
-      mc.clients.push(c);
-      c.on('connect', () => { mc.anyUp = true; c.subscribe(inT, { qos: 0 }); });
-      c.on('error', (e) => console.warn('mqtt error', url, e && e.message));
-      c.on('message', (topic, payload) => {
-        let m; try { m = JSON.parse(payload.toString()); } catch (e) { return; }
-        mc.onMsg && mc.onMsg(m, c);
-      });
-    }
-    return mc;
+  async function iceConfig() {
+    try {
+      const r = await fetch(RELAY_URL + '/turn', { cache: 'no-store' });
+      const j = await r.json();
+      if (j && Array.isArray(j.iceServers) && j.iceServers.length) { net.turn = !!j.turn; return { iceServers: j.iceServers }; }
+    } catch (e) {}
+    net.turn = false;
+    return { iceServers: [{ urls: ['stun:stun.cloudflare.com:3478', 'stun:stun.l.google.com:19302'] }] };
   }
 
+  // WebSocket link to the relay: open / send / close, same shape as the RTC link
+  function makeWs(code, role, h) {
+    const ws = new WebSocket(RELAY_URL.replace(/^http/, 'ws') + `/room/${code}?role=${role}`);
+    const link = { kind: 'relay', ws, open: false,
+      send(m) { if (ws.readyState === 1) try { ws.send(JSON.stringify(m)); } catch (e) {} },
+      close() { this.open = false; try { ws.close(); } catch (e) {} },
+    };
+    ws.onopen = () => { link.open = true; h.open && h.open(); };
+    ws.onmessage = (e) => { if (e.data === 'hb') return; let m; try { m = JSON.parse(e.data); } catch (err) { return; } h.msg(m); };
+    ws.onclose = (e) => { const was = link.open; link.open = false; h.close && h.close(was, e && e.code); };
+    ws.onerror = () => {};
+    return link;
+  }
+  setInterval(() => { if (net.ws && net.ws.ws.readyState === 1) try { net.ws.ws.send('hb'); } catch (e) {} }, 10000);
+
   // WebRTC link: 'ctl' = reliable ordered (inputs, events, control), 'fast' = unordered, no retransmits (snapshots)
-  function makeRtc(signal, onMsg, onOpen, onClose) {
+  function makeRtc(cfg, signal, onMsg, onOpen, onClose) {
     if (!window.RTCPeerConnection) return null;
-    const pc = new RTCPeerConnection(RTC_CFG);
+    const pc = new RTCPeerConnection(cfg);
     const rc = { kind: 'rtc', open: false, pc, ctl: null, fast: null, remoteSet: false, pending: [],
       send(m) { if (this.ctl && this.ctl.readyState === 'open') try { this.ctl.send(JSON.stringify(m)); } catch (e) {} },
       sendFast(m) { if (this.fast && this.fast.readyState === 'open') { try { this.fast.send(JSON.stringify(m)); } catch (e) {} } else this.send(m); },
@@ -1443,55 +1439,82 @@
     };
     pc.onicecandidate = (e) => { if (e.candidate) signal({ t: 'ice', c: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate }); };
     pc.ondatachannel = (e) => { if (e.channel.label === 'ctl') rc.ctl = e.channel; else rc.fast = e.channel; rc.wire(e.channel); };
+    pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed' && rc.open) { rc.open = false; onClose(); } };
     return rc;
   }
+  function dropRtc() { const rc = net.rtc; net.rtc = null; try { rc && rc.close(); } catch (e) {} }
+  // what the HUD shows next to the ping
+  function viaLabel() {
+    if (net.transport === 'relay') return ' · через сервер';
+    if (net.transport !== 'rtc' || !net.rtc) return '';
+    return net.rtc.viaTurn ? ' · через TURN' : ' · напрямую';
+  }
+  async function detectPath(rc) { // P2P or TURN? (for the HUD only)
+    try {
+      const st = await rc.pc.getStats();
+      let pairId = null, cands = {};
+      st.forEach(r => { if (r.type === 'transport' && r.selectedCandidatePairId) pairId = r.selectedCandidatePairId; if (r.type === 'local-candidate') cands[r.id] = r; });
+      let local = null; st.forEach(r => { if (r.type === 'candidate-pair' && r.id === pairId) local = cands[r.localCandidateId]; });
+      if (!local) st.forEach(r => { if (r.type === 'candidate-pair' && r.nominated && r.state === 'succeeded' && !local) local = cands[r.localCandidateId]; });
+      rc.viaTurn = !!(local && local.candidateType === 'relay');
+    } catch (e) {}
+  }
+
+  const HOST_LOBBY = 'Комната открыта. Скопируй ссылку или код и скинь другу.\n⚠️ Не закрывай и не сворачивай игру, пока он не зайдёт.';
 
   function hostRoom() {
     net.lastAction = () => hostRoom();
     const abc = 'abcdefghjkmnpqrstuvwxyz23456789';
     net.code = Array.from({ length: 5 }, () => abc[Math.floor(Math.random() * abc.length)]).join('');
-    net.role = 'host'; net.transport = null; net.guestId = null; lastErr = null;
-    lobby('Скопируй ссылку или код и скинь другу.\n⚠️ Не закрывай и не сворачивай игру, пока он не зайдёт — комната живёт только пока открыто это лобби.', net.code, true);
+    net.role = 'host'; net.transport = null; net.guestHere = false; lastErr = null;
+    lobby('Открываем комнату…', net.code, true);
     const code = net.code;
-    const mq = net.mq = makeMqtt(code, 'host');
-    const signal = (m) => mq.send({ ...m, to: net.guestId });
-    const goRelay = () => {
-      if (net.role !== 'host' || net.code !== code || net.conn) return;
-      mq.open = true; net.conn = mq; net.transport = 'relay'; startOnlineMatch();
-    };
-    mq.onMsg = async (m, client) => {
-      if (net.role !== 'host' || net.code !== code) return;
-      if (m.t === 'hello') {
-        if (net.guestId && m.gid !== net.guestId) return;           // room already taken
-        if (!net.guestId) {
-          net.guestId = m.gid; mq.active = client;
-          $('lobbyTxt').textContent = 'Друг нашёлся! Соединяемся напрямую…';
-          if (FORCE_RELAY || !window.RTCPeerConnection) { goRelay(); return; }
-          const rc = net.rtc = makeRtc(signal, (msg) => {
-            if (net.conn === rc) onHostData(msg);
-          }, () => {
-            if (net.role !== 'host') return;
-            if (!net.conn) { net.conn = rc; net.transport = 'rtc'; startOnlineMatch(); }
-            else if (net.conn === mq) { net.conn = rc; net.transport = 'rtc'; rc.send({ t: 'upgrade' }); } // relay -> P2P mid-match
-          }, () => { if (net.conn === rc) onPeerLeft(); });
-          rc.ctl = rc.pc.createDataChannel('ctl'); rc.wire(rc.ctl);
-          rc.fast = rc.pc.createDataChannel('fast', { ordered: false, maxRetransmits: 0 }); rc.wire(rc.fast);
-          const offer = await rc.pc.createOffer();
-          await rc.pc.setLocalDescription(offer);
-          signal({ t: 'offer', sdp: rc.pc.localDescription });
-          setTimeout(goRelay, RTC_WAIT);
-        } else if (net.transport === 'relay') mq.send({ t: 'start', host: pick });   // guest missed 'start'
-        else if (!net.conn && net.rtc && net.rtc.pc.localDescription) signal({ t: 'offer', sdp: net.rtc.pc.localDescription });
-        return;
-      }
-      if (m.gid && m.gid !== net.guestId) return;
-      if (m.t === 'answer' && net.rtc && !net.rtc.remoteSet) { try { await net.rtc.setRemote(m.sdp); } catch (e) { console.warn(e); } return; }
-      if (m.t === 'ice' && net.rtc) { net.rtc.addIce(m.c); return; }
-      if (net.conn === mq) onHostData(m);                             // relay traffic
-    };
-    setTimeout(() => {
-      if (net.role === 'host' && net.code === code && !net.conn && !mq.anyUp) netError((lastErr && lastErr[0]) || 'network');
-    }, 12000);
+    const ws = net.ws = makeWs(code, 'host', {
+      open() { if (net.role === 'host' && net.code === code) $('lobbyTxt').textContent = HOST_LOBBY; },
+      async msg(m) {
+        if (net.role !== 'host' || net.code !== code) return;
+        if (m.t === 'joined') {
+          if (net.guestHere) return;
+          net.guestHere = true; $('lobbyTxt').textContent = 'Друг нашёлся! Соединяемся…';
+          await startRtcAsHost(ws, code); return;
+        }
+        if (m.t === 'left') {
+          if (net.conn) onPeerLeft();
+          else { net.guestHere = false; dropRtc(); $('lobbyTxt').textContent = 'Друг отвалился, не дождавшись боя. Ждём снова.\n' + HOST_LOBBY; }
+          return;
+        }
+        if (m.t === 'answer' && net.rtc && !net.rtc.remoteSet) { try { await net.rtc.setRemote(m.sdp); } catch (e) { console.warn(e); } return; }
+        if (m.t === 'ice' && net.rtc) { net.rtc.addIce(m.c); return; }
+        if (net.conn === ws) onHostData(m);
+      },
+      close(was, cc) {
+        if (net.role !== 'host' || net.code !== code) return;
+        if (cc === 4409) { leaveOnline(); hostRoom(); return; } // code collision: pick another
+        if (net.conn && net.conn !== ws) return; // match runs over WebRTC; the relay socket is expendable
+        netError(was ? 'relay-closed' : 'relay');
+      },
+    });
+    setTimeout(() => { if (net.role === 'host' && net.code === code && !ws.open) netError('relay'); }, 12000);
+  }
+  async function startRtcAsHost(ws, code) {
+    const goRelay = () => { if (net.role !== 'host' || net.code !== code || net.conn) return; net.conn = ws; net.transport = 'relay'; startOnlineMatch(); };
+    if (FORCE_RELAY || !window.RTCPeerConnection) { goRelay(); return; }
+    const cfg = await iceConfig();
+    if (net.role !== 'host' || net.code !== code) return;
+    const rc = net.rtc = makeRtc(cfg, (m) => ws.send(m), (msg) => { if (net.conn === rc) onHostData(msg); }, () => {
+      if (net.role !== 'host' || net.rtc !== rc) return;
+      detectPath(rc);
+      if (!net.conn) { net.conn = rc; net.transport = 'rtc'; startOnlineMatch(); }
+      else if (net.conn === ws) { net.conn = rc; net.transport = 'rtc'; rc.send({ t: 'upgrade' }); } // relay -> direct mid-match
+    }, () => { if (net.conn === rc) onPeerLeft(); });
+    rc.ctl = rc.pc.createDataChannel('ctl'); rc.wire(rc.ctl);
+    rc.fast = rc.pc.createDataChannel('fast', { ordered: false, maxRetransmits: 0 }); rc.wire(rc.fast);
+    try {
+      const offer = await rc.pc.createOffer();
+      await rc.pc.setLocalDescription(offer);
+      ws.send({ t: 'offer', sdp: rc.pc.localDescription });
+    } catch (e) { console.warn('offer failed', e); goRelay(); return; }
+    setTimeout(goRelay, RTC_WAIT);
   }
   function startOnlineMatch() {
     if (document.hidden) { pendingStart = true; return; } // host is minimized: start when they come back
@@ -1510,50 +1533,58 @@
     } else if (m.t === 'again' && phase === 'over') startOnlineMatch();
   }
 
-  function joinRoom(code) {
+  async function joinRoom(code) {
     net.lastAction = () => joinRoom(code);
     net.code = code; net.role = 'guest'; net.transport = null; lastErr = null; lastSeq = -1;
     lobby('Ищем комнату…', code, false);
-    const gid = Math.random().toString(36).slice(2, 10);
-    const mq = net.mq = makeMqtt(code, 'guest');
-    const signal = (m) => mq.send({ ...m, gid });
-    const takeRtc = (rc) => { net.conn = rc; net.transport = 'rtc'; };
-    mq.onMsg = async (m, client) => {
-      if (net.role !== 'guest' || net.code !== code) return;
-      if (m.to && m.to !== gid) return;
-      if (m.t === 'offer') {
-        if (net.rtc) return;
-        mq.active = client;
-        $('lobbyTxt').textContent = 'Комната найдена! Соединяемся напрямую…';
-        const rc = net.rtc = makeRtc(signal, (msg) => {
-          if (net.conn !== rc && msg && (msg.t === 'start' || msg.t === 'upgrade')) takeRtc(rc);
-          if (net.conn === rc) onGuestData(msg);
-        }, () => {}, () => { if (net.conn === rc) onPeerLeft(); });
-        if (!rc) return;
-        try {
-          await rc.setRemote(m.sdp);
-          const ans = await rc.pc.createAnswer();
-          await rc.pc.setLocalDescription(ans);
-          signal({ t: 'answer', sdp: rc.pc.localDescription });
-        } catch (e) { console.warn('answer failed', e); }
-        return;
-      }
-      if (m.t === 'ice') { if (net.rtc) net.rtc.addIce(m.c); return; }
-      if (!net.conn && m.t === 'start') { mq.active = client; mq.open = true; net.conn = mq; net.transport = 'relay'; }
-      if (net.conn === mq && client === mq.active) onGuestData(m);  // relay traffic
-    };
-    const hello = setInterval(() => {
-      if (net.role !== 'guest' || net.code !== code || net.conn) { clearInterval(hello); return; }
-      if (!net.rtc || FORCE_RELAY) mq.sendAll({ t: 'hello', gid });
-    }, 800);
+    let chk = null;
+    try { chk = await (await fetch(`${RELAY_URL}/room/${code}/check`, { cache: 'no-store' })).json(); } catch (e) {}
+    if (net.role !== 'guest' || net.code !== code) return;
+    if (!chk) { netError('relay'); return; }
+    if (!chk.host) { netError('peer-unavailable'); return; }
+    if (chk.guest) { netError('room-full'); return; }
+    const cfgP = iceConfig();
+    const ws = net.ws = makeWs(code, 'guest', {
+      open() { if (net.role === 'guest' && net.code === code) $('lobbyTxt').textContent = 'Комната найдена! Соединяемся…'; },
+      async msg(m) {
+        if (net.role !== 'guest' || net.code !== code) return;
+        if (m.t === 'offer') {
+          if (net.rtc || FORCE_RELAY) return;
+          const cfg = await cfgP;
+          if (net.role !== 'guest' || net.code !== code || net.rtc) return;
+          const rc = net.rtc = makeRtc(cfg, (x) => ws.send(x), (msg) => {
+            if (net.conn !== rc && msg && (msg.t === 'start' || msg.t === 'upgrade')) { net.conn = rc; net.transport = 'rtc'; detectPath(rc); }
+            if (net.conn === rc) onGuestData(msg);
+          }, () => {}, () => { if (net.conn === rc) onPeerLeft(); });
+          if (!rc) return;
+          try {
+            await rc.setRemote(m.sdp);
+            const ans = await rc.pc.createAnswer();
+            await rc.pc.setLocalDescription(ans);
+            ws.send({ t: 'answer', sdp: rc.pc.localDescription });
+          } catch (e) { console.warn('answer failed', e); }
+          return;
+        }
+        if (m.t === 'ice') { if (net.rtc) net.rtc.addIce(m.c); return; }
+        if (m.t === 'left') { onPeerLeft(); return; }
+        if (!net.conn && m.t === 'start') { net.conn = ws; net.transport = 'relay'; }
+        if (net.conn === ws) onGuestData(m);
+      },
+      close(was, cc) {
+        if (net.role !== 'guest' || net.code !== code) return;
+        if (cc === 4404) { netError('peer-unavailable'); return; }
+        if (cc === 4409) { netError('room-full'); return; }
+        if (net.conn && net.conn !== ws) return;
+        netError(was ? 'relay-closed' : 'relay');
+      },
+    });
     clearTimeout(guestTimer);
     const t0 = Date.now();
     const waitTick = () => {
       if (net.role !== 'guest' || net.code !== code || net.conn) return;
       const s = (Date.now() - t0) / 1000;
-      if (s > 10 && !mq.anyUp) { netError((lastErr && lastErr[0]) || 'network'); return; }
-      if (s > 60) { netError(net.rtc ? 'timeout' : 'peer-unavailable'); return; }
-      if (s > 8 && !net.rtc) $('lobbyTxt').textContent = `Ждём хоста… (${Math.round(s)} с)\nЕсли друг свернул игру или ушёл в чат — пусть вернётся в неё, комната живёт только пока у него открыто лобби.`;
+      if (s > 45) { netError('timeout'); return; }
+      if (s > 10) $('lobbyTxt').textContent = `Ждём хоста… (${Math.round(s)} с)\nЕсли друг свернул игру или ушёл в чат — пусть вернётся в неё.`;
       guestTimer = setTimeout(waitTick, 1000);
     };
     guestTimer = setTimeout(waitTick, 1000);
@@ -1582,12 +1613,12 @@
     lobby('Соперник отключился 🚪', '');
   }
   function leaveOnline() {
-    const rc = net.rtc, mq = net.mq;
-    net.role = null; net.conn = null; net.rtc = null; net.mq = null; net.transport = null; net.guestId = null;
+    const rc = net.rtc, ws = net.ws;
+    net.role = null; net.conn = null; net.rtc = null; net.ws = null; net.transport = null; net.guestHere = false;
     lastRecv = 0; pingMs = null; peerPaused = false; pendingStart = false;
     clearTimeout(guestTimer);
     try { rc && rc.close(); } catch (e) {}
-    try { mq && mq.close(); } catch (e) {}
+    try { ws && ws.close(); } catch (e) {}
   }
   $('share').addEventListener('click', () => {
     const link = inviteLink(), text = 'Го драться: петух боец vs кот 🥊 Заходи в мою комнату!';
