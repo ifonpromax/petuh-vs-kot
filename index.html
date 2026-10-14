@@ -41,6 +41,12 @@
     background: #000b; pointer-events: none;
   }
   .b.sp.ready { box-shadow: 0 4px 0 #0008, 0 0 12px #ffb43c; }
+  #taunts { position: absolute; left: 6px; bottom: 6px; z-index: 4; display: flex; gap: 6px; }
+  .tb {
+    height: 34px; padding: 0 10px; border-radius: 10px; border: 2px solid #ffffff30; background: #000a; color: #fff;
+    font-size: 12px; display: flex; align-items: center; letter-spacing: .3px; touch-action: none;
+  }
+  .tb.on { background: #ff3ba5; border-color: #ff3ba5; }
   #music { right: 46px !important; }
   #music.off { opacity: .45; text-decoration: line-through; }
   #mute, #music {
@@ -103,6 +109,12 @@
   }
   .big.alt { background: #ffffff22; color: #fff; box-shadow: 0 4px 0 #0008; }
   #online.sel { background: #e3263a; box-shadow: 0 4px 0 #7a0a16; }
+  #codeIn {
+    font: inherit; font-size: 34px; letter-spacing: 8px; text-align: center; text-transform: uppercase; width: 230px;
+    padding: 10px 12px; border-radius: 14px; border: 3px solid #ffcf3a88; background: #0007; color: #fff; outline: none; margin-top: 6px;
+    user-select: text; -webkit-user-select: text; touch-action: manipulation;
+  }
+  #codeIn:focus { border-color: var(--gold); }
   .diff { display: flex; gap: 6px; margin-top: 10px; font-family: "Segoe UI", sans-serif; font-size: 12px; }
   .diff button {
     font: inherit; color: #fff; background: #ffffff15; border: 2px solid #ffffff25; border-radius: 10px; padding: 6px 10px;
@@ -119,6 +131,10 @@
 <div id="app">
   <div id="stage">
     <canvas id="game" width="800" height="500"></canvas>
+    <div id="taunts">
+      <div class="tb" data-k="dance">💃 ТАНЕЦ</div>
+      <div class="tb" data-k="insult">🗣 ДРАЗНИЛКА</div>
+    </div>
     <button id="mute">🔊</button>
     <button id="music">🎵</button>
 
@@ -142,8 +158,22 @@
         <button data-d="1" class="sel">норм</button>
         <button data-d="2">колян</button>
       </div>
-      <button class="big alt" id="online" style="margin-top:12px">⚔️ ИГРАТЬ С ДРУГОМ</button>
+      <div class="row" style="margin-top:12px">
+        <button class="big alt" id="online">⚔️ ИГРАТЬ С ДРУГОМ</button>
+        <button class="big alt" id="joinBtn">🔑 ПО КОДУ</button>
+      </div>
       <div class="hint">◀ ▶ ходить · ▲ прыжок · ▼ присед (присед и прыжок спасают только от лёгких) · лёгкий/тяжёлый удар · держи блок · 2 спецприёма с перезарядкой. бой до 2 побед</div>
+    </div>
+
+    <div class="screen" id="join">
+      <div class="title">🔑 ВХОД ПО КОДУ</div>
+      <div class="sub">попроси у друга код комнаты — 5 символов</div>
+      <input id="codeIn" maxlength="5" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="ABCDE">
+      <div class="sub" id="joinErr" style="color:#ff8a8a;min-height:16px"></div>
+      <div class="row">
+        <button class="big" id="joinGo">ВОЙТИ</button>
+        <button class="big alt" id="joinBack">НАЗАД</button>
+      </div>
     </div>
 
     <div class="screen" id="lobby">
@@ -466,6 +496,11 @@
     meow() { voice([[600, 820, 0.12, 0.3], [820, 980, 0.14, 0.35], [980, 520, 0.38, 0.3]], 'sawtooth', 1100); },
     sadCrow(d) { voice([[460, 520, 0.18, 0.3], [520, 400, 0.22, 0.28], [400, 300, 0.3, 0.25], [300, 170, 0.7, 0.22]], 'sawtooth', 1200, d); },
     sadMeow(d) { voice([[520, 600, 0.2, 0.28], [600, 420, 0.35, 0.26], [420, 230, 0.8, 0.22]], 'sawtooth', 900, d); },
+    dance() { [659, 784, 880, 784, 659, 523, 587, 659].forEach((f, i) => tone(f, f, 0.12, 'square', 0.09, i * 0.14)); },
+    insult(kind) {
+      if (kind === 'rooster') voice([[700, 1000, 0.09, 0.3], [1000, 750, 0.12, 0.3]], 'sawtooth', 1600);
+      else voice([[650, 900, 0.1, 0.28], [900, 600, 0.18, 0.26]], 'sawtooth', 1100);
+    },
     dive() { tone(380, 1700, 0.45, 'sine', 0.18); noise(0.45, 600, 3000, 1, 0.15); },
     boom() { tone(95, 28, 0.55, 'sine', 1); noise(0.45, 400, 80, 0.6, 0.8); },
     dig() { noise(0.06, 1400, 600, 1.5, 0.22); },
@@ -590,6 +625,29 @@
     },
   };
 
+  // ---------- taunts ----------
+  const INSULTS = {
+    rooster: [
+      'Ты чё, на ТО к коляну опаздываешь?', 'Иди лоток закапывай', 'Кис-кис, сюда иди', 'Сигарету потуши, лёгкие пожалей',
+      'Очки у бабушки взял?', 'Мяукни, если страшно', 'Девять жизней, а мозг один', 'Съем тебя на завтрак. С насваем',
+      'Чё ты как котлета', 'Шерсть дыбом, а толку ноль',
+    ],
+    cat: [
+      'Кукарекни ещё, петушара', 'Наггетс на ножках', 'Тебя KFC обыскались', 'Яйца свои собери',
+      'Гребешок не жмёт?', 'Цыпа-цыпа-цыпа', 'Ты бульон или боец?', 'Шорты KFC — это реклама?',
+      'Иди зерно поклюй', 'Ехала газ… мимо тебя',
+    ],
+  };
+  const DANCE_T = 80;
+  function doTaunt(f, cmd) {
+    if (f.state === 'ko') return;
+    if (cmd.insult && !(f.sayT > 40)) {
+      const list = INSULTS[f.kind]; f.say = list[Math.floor(Math.random() * list.length)]; f.sayT = 160;
+      SFX.insult(f.kind);
+    }
+    if (cmd.dance && !busy(f) && f.y >= GROUND) { f.state = 'taunt'; f.st = 0; f.vx = 0; f.blocking = f.crouch = false; SFX.dance(); }
+  }
+
   // ---------- specials ----------
   const SPECIALS = {
     rooster: [
@@ -629,7 +687,7 @@
     SFX.bell();
   }
 
-  const busy = (f) => f.state === 'attack' || f.state === 'special' || f.state === 'hit' || f.state === 'dizzy' || f.state === 'ko';
+  const busy = (f) => f.state === 'attack' || f.state === 'special' || f.state === 'hit' || f.state === 'dizzy' || f.state === 'ko' || f.state === 'taunt';
 
   function startAttack(f, kind) {
     if (busy(f)) return;
@@ -645,6 +703,7 @@
   }
 
   function control(f, cmd) {
+    doTaunt(f, cmd);
     if (busy(f)) { if (f.state !== 'special' && f.state !== 'attack') f.blocking = false; f.crouch = false; return; }
     const onGround = f.y >= GROUND;
     f.blocking = !!cmd.block && onGround;
@@ -668,6 +727,8 @@
     const cmd = { left: false, right: false, jump: false, light: false, heavy: false, block: false, sp1: false, sp2: false };
     const toward = Math.sign(p.x - a.x) || 1;
     const go = (dir) => { if (dir > 0) cmd.right = true; else cmd.left = true; };
+    if (Math.random() < (d > 240 ? 0.004 : 0.0008)) cmd.insult = true;
+    if (p.state === 'dizzy' && d > 200 && Math.random() < 0.02) cmd.dance = true;
     if (busy(a)) return cmd;
     // incoming projectile -> block (or jump over the ember on hard)
     for (const q of projectiles) {
@@ -726,6 +787,12 @@
     for (let i = 0; i < 2; i++) if (f.cd[i] > 0) f.cd[i]--;
     if (f.yolk > 0) f.yolk--;
     if (f.noCig > 0) f.noCig--;
+    if (f.sayT > 0) f.sayT--;
+    if (f.state === 'taunt') {
+      f.st++; f.walk = 0;
+      if (f.st % 12 === 0) particles.push({ x: f.x + (Math.random() - 0.5) * 60, y: f.y - 230, vx: (Math.random() - 0.5) * 2, vy: -1.2, life: 40, col: '#ff8be0', kind: 'note', rot: 0 });
+      if (f.st >= DANCE_T) f.state = 'idle';
+    }
     if (f.burn > 0) {
       f.burn--;
       if (f.burn % 30 === 0 && f.state !== 'ko') { f.hp -= 1; checkKO(f, -f.facing); }
@@ -887,7 +954,7 @@
   function popup(x, y, text, col) { if (net.role === 'host') net.ev.push(['popup', x | 0, y | 0, text, col]); popups.push({ x, y, text, col, life: 40 }); }
 
   function updateCosmetics() {
-    for (const q of particles) { q.x += q.vx; q.y += q.vy; q.vy += q.kind === 'spark' ? 0.25 : 0.06; q.vx *= q.kind === 'spark' ? 0.92 : 0.97; q.life--; if (q.rot != null) q.rot += 0.1; }
+    for (const q of particles) { q.x += q.vx; q.y += q.vy; q.vy += q.kind === 'spark' ? 0.25 : q.kind === 'note' ? 0 : 0.06; q.vx *= q.kind === 'spark' ? 0.92 : 0.97; q.life--; if (q.rot != null) q.rot += 0.1; }
     particles = particles.filter(q => q.life > 0);
     if (particles.length > 400) particles.splice(0, particles.length - 400);
     for (const q of popups) { q.y -= 0.8; q.life--; }
@@ -909,10 +976,18 @@
     phaseT++;
     if (phase === 'intro') { if (phaseT === 66) SFX.gong(); if (phaseT > 110) { phase = 'fight'; phaseT = 0; } }
     const live = phase === 'fight';
-    const pc = live ? { left: input.left, right: input.right, block: input.block, down: input.down, jump: input.jumpP, light: input.lightP, heavy: input.heavyP, sp1: input.sp1P, sp2: input.sp2P } : {};
+    const pc = live ? { left: input.left, right: input.right, block: input.block, down: input.down, jump: input.jumpP, light: input.lightP, heavy: input.heavyP, sp1: input.sp1P, sp2: input.sp2P, dance: input.danceP, insult: input.insultP } : {};
     input.jumpP = input.lightP = input.heavyP = input.sp1P = input.sp2P = false;
     if (live) { control(P, pc); control(A, net.role === 'host' ? remoteCmd() : aiThink(A, P)); }
-    else { if (P.state !== 'special') P.vx = 0; if (A.state !== 'special') A.vx = 0; P.blocking = A.blocking = false; }
+    else {
+      if (P.state !== 'special') P.vx = 0; if (A.state !== 'special') A.vx = 0; P.blocking = A.blocking = false;
+      if (phase === 'end') { // rub it in after the KO
+        doTaunt(P, { dance: input.danceP, insult: input.insultP });
+        if (net.role === 'host') doTaunt(A, remoteCmd());
+        else if (A.hp > P.hp && (phaseT === 20 || phaseT === 30)) doTaunt(A, { dance: phaseT === 20, insult: phaseT === 30 });
+      }
+    }
+    input.danceP = input.insultP = false;
     if (!busy(P)) P.facing = Math.sign(A.x - P.x) || 1;
     if (!busy(A)) A.facing = Math.sign(P.x - A.x) || -1;
     physics(P, A); physics(A, P);
@@ -978,6 +1053,7 @@
       if (f.sp === 'dive') ext = f.st <= 44 ? Math.sin(f.st * 0.9) : 1;
       if (f.sp === 'dig') ext = s < 38 ? Math.sin(s * 0.7) * 0.5 : (s < 44 ? 1 : 1 - (s - 44) / 10);
     }
+    if (f.state === 'taunt') ext = Math.sin(f.st * 0.45) * 0.8;
     return { walk: f.walk, ext, block: f.blocking, air: f.y < GROUND - 2, hurt: f.state === 'hit' || f.state === 'dizzy', ko: f.state === 'ko', t: f.t, spd: Math.abs(f.vx), noCig: f.noCig > 0 };
   }
   function drawFighter(c, f) {
@@ -987,6 +1063,11 @@
     if (f.state === 'ko' && f.y >= GROUND) c.rotate(f.facing * -1.35);
     else if (f.state === 'hit') c.rotate(f.facing * -0.12);
     else if (f.state === 'dizzy') c.rotate(Math.sin(f.t * 0.15) * 0.12);
+    else if (f.state === 'taunt') {
+      c.translate(0, -Math.abs(Math.sin(f.st * 0.3)) * 24);
+      c.rotate(Math.sin(f.st * 0.25) * 0.22);
+      if (Math.floor(f.st / 16) % 2 === 1) c.scale(-1, 1); // turn around mid-dance
+    }
     else if (f.state === 'special' && f.sp === 'dig' && f.st < 44) c.rotate(f.facing * 0.5);
     else if (f.state === 'special' && f.sp === 'dive' && f.st > 44 && f.landT === 0) {
       c.translate(0, -100); c.rotate(Math.atan2(f.dvy, Math.abs(f.dvx)) * f.facing); c.translate(0, 100);
@@ -1009,6 +1090,23 @@
         txt(c, '★', f.x + Math.cos(a) * 36, f.y - 250 + Math.sin(a) * 9, 22, '#ffe23c', 'center', 3);
       }
     }
+  }
+
+  function bubble(c, f) { // speech bubble with an insult above the fighter
+    c.save();
+    c.globalAlpha = Math.min(1, f.sayT / 15);
+    c.font = 'bold 17px "Segoe UI", sans-serif';
+    const pad = 10, w = Math.min(330, c.measureText(f.say).width + pad * 2), h = 32;
+    let bx = f.x - w / 2; bx = Math.max(8, Math.min(W - 8 - w, bx));
+    const by = Math.max(96, Math.min(f.y, GROUND) - 300);
+    c.beginPath(); c.roundRect ? c.roundRect(bx, by, w, h, 12) : c.rect(bx, by, w, h);
+    c.fillStyle = '#fff'; c.fill(); c.lineWidth = 3; c.strokeStyle = '#000'; c.stroke();
+    const tx = Math.max(bx + 14, Math.min(bx + w - 14, f.x));
+    c.beginPath(); c.moveTo(tx - 8, by + h - 1); c.lineTo(tx, by + h + 12); c.lineTo(tx + 8, by + h - 1); c.closePath(); c.fill();
+    c.beginPath(); c.moveTo(tx - 8, by + h); c.lineTo(tx, by + h + 12); c.lineTo(tx + 8, by + h); c.stroke();
+    c.fillStyle = '#111'; c.textAlign = 'center'; c.textBaseline = 'middle';
+    c.fillText(f.say, bx + w / 2, by + h / 2 + 1, w - pad * 2);
+    c.restore();
   }
 
   function drawProjectile(c, q) {
@@ -1042,6 +1140,13 @@
     bar(20, 320, P, false); bar(460, 320, A, true);
     ell(c, 400, 32, 34, 26, '#141419', '#ffd23c', 3);
     txt(c, String(Math.max(0, Math.ceil(timer / 60))), 400, 45, 30, '#fff', 'center', 4);
+    if (net.role) {
+      const ms = pingMs == null ? null : Math.round(pingMs);
+      const col = ms == null ? '#aaa' : ms < 80 ? '#7cff6a' : ms < 150 ? '#ffd23c' : '#ff4a4a';
+      c.fillStyle = 'rgba(0,0,0,.55)'; c.fillRect(352, 62, 96, 20);
+      ell(c, 364, 72, 4, 4, col);
+      txt(c, ms == null ? 'пинг …' : `пинг ${ms} мс`, 405, 78, 14, col, 'center', 3);
+    }
     if (P && P.state !== 'ko') {
       c.save(); c.globalAlpha = 0.9;
       const me = myFighter();
@@ -1065,11 +1170,13 @@
       for (const q of particles) {
         ctx.globalAlpha = Math.min(1, q.life / 15);
         if (q.kind === 'spark') { ctx.fillStyle = q.col; ctx.fillRect(q.x - 2, q.y - 2, 4, 4); }
+        else if (q.kind === 'note') txt(ctx, Math.floor(q.x) % 2 ? '♪' : '♫', q.x, q.y, 24, q.col, 'center', 3);
         else { ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(q.rot); ell(ctx, 0, 0, q.kind === 'feather' ? 9 : 5, q.kind === 'feather' ? 3 : 2.5, q.col); ctx.restore(); }
       }
       ctx.globalAlpha = 1;
       for (const q of popups) { ctx.globalAlpha = Math.min(1, q.life / 12); txt(ctx, q.text, q.x, q.y, 30, q.col); }
       ctx.globalAlpha = 1;
+      for (const f of [P, A]) if (f.sayT > 0 && f.say) bubble(ctx, f);
     }
     ctx.restore();
     if (P && A) {
@@ -1103,7 +1210,7 @@
   const held = {};
   function setKey(k, on) {
     if (k === 'left' || k === 'right' || k === 'block' || k === 'down') input[k] = on;
-    if (on && !held[k]) { if (k === 'jump') input.jumpP = true; if (k === 'light') input.lightP = true; if (k === 'heavy') input.heavyP = true; if (k === 'sp1') input.sp1P = true; if (k === 'sp2') input.sp2P = true; }
+    if (on && !held[k]) { if (k === 'jump') input.jumpP = true; if (k === 'light') input.lightP = true; if (k === 'heavy') input.heavyP = true; if (k === 'sp1') input.sp1P = true; if (k === 'sp2') input.sp2P = true; if (k === 'dance') input.danceP = true; if (k === 'insult') input.insultP = true; }
     if (net.role === 'guest' && held[k] !== on) netSend({ t: 'i', k, on });
     held[k] = on;
   }
@@ -1158,7 +1265,7 @@
   // ================= ONLINE (PeerJS, host-authoritative) =================
   const BOT_USERNAME = 'petuh_vs_kot_bot';
   const net = { role: null, peer: null, conn: null, code: '', ev: [], rin: { left: false, right: false, block: false, down: false }, redge: {} };
-  const FIELDS = ['kind', 'x', 'y', 'vx', 'facing', 'hp', 'state', 'st', 'move', 'sp', 'walk', 't', 'blocking', 'crouch', 'stun', 'yolk', 'noCig', 'burn', 'dvx', 'dvy', 'landT', 'cd'];
+  const FIELDS = ['kind', 'x', 'y', 'vx', 'facing', 'hp', 'state', 'st', 'move', 'sp', 'walk', 't', 'blocking', 'crouch', 'stun', 'yolk', 'noCig', 'burn', 'dvx', 'dvy', 'landT', 'cd', 'say', 'sayT'];
   const r1 = (v) => (typeof v === 'number' ? Math.round(v * 10) / 10 : v);
 
   // mirror every sound / haptic the host makes to the guest
@@ -1166,15 +1273,25 @@
 
   function netSend(m) { try { if (net.conn && net.conn.open) net.conn.send(m); } catch (e) {} }
   // heartbeat: both sides ping every second; 6s of silence = opponent gone
-  let lastRecv = 0;
+  let lastRecv = 0, pingMs = null;
   setInterval(() => {
     if (!net.role || !net.conn || !net.conn.open) return;
-    netSend({ t: 'p' });
+    netSend({ t: 'p', ts: performance.now() });
     if (lastRecv && Date.now() - lastRecv > 6000) onPeerLeft();
-  }, 1000);
+  }, 500);
   const gotMsg = () => { lastRecv = Date.now(); };
+  // returns true if the message was a ping/pong and is fully handled
+  function handlePing(m) {
+    if (m.t === 'p') { netSend({ t: 'pp', ts: m.ts }); return true; }
+    if (m.t === 'pp') {
+      const rtt = performance.now() - m.ts;
+      if (rtt >= 0 && rtt < 10000) pingMs = pingMs == null ? rtt : pingMs * 0.7 + rtt * 0.3;
+      return true;
+    }
+    return false;
+  }
   function remoteCmd() {
-    const c = { ...net.rin, jump: !!net.redge.jump, light: !!net.redge.light, heavy: !!net.redge.heavy, sp1: !!net.redge.sp1, sp2: !!net.redge.sp2 };
+    const c = { ...net.rin, jump: !!net.redge.jump, light: !!net.redge.light, heavy: !!net.redge.heavy, sp1: !!net.redge.sp1, sp2: !!net.redge.sp2, dance: !!net.redge.dance, insult: !!net.redge.insult };
     net.redge = {};
     return c;
   }
@@ -1205,6 +1322,7 @@
   }
   function guestTick() { // cosmetics only; the host owns the simulation
     frame++;
+    for (const f of [P, A]) if (f.state === 'taunt' && frame % 12 === 0) particles.push({ x: f.x + (Math.random() - 0.5) * 60, y: f.y - 230, vx: (Math.random() - 0.5) * 2, vy: -1.2, life: 40, col: '#ff8be0', kind: 'note', rot: 0 });
     for (const f of [P, A]) if (f.burn > 0 && frame % 4 === 0) particles.push({ x: f.x + (Math.random() - 0.5) * 50, y: f.y - 60 - Math.random() * 150, vx: 0, vy: -1.5, life: 22, col: Math.random() < 0.5 ? '#ff7a00' : '#ffd23c', kind: 'spark' });
     for (const q of projectiles) {
       if (q.kind === 'ember' && frame % 2 === 0) particles.push({ x: q.x, y: q.y, vx: -q.vx * 0.05, vy: -0.5, life: 14, col: '#ff5a00', kind: 'spark' });
@@ -1255,9 +1373,10 @@
   function onHostData(m) {
     if (!m || typeof m !== 'object') return;
     gotMsg();
+    if (handlePing(m)) return;
     if (m.t === 'i') {
       if (['left', 'right', 'block', 'down'].includes(m.k)) net.rin[m.k] = !!m.on;
-      else if (m.on && ['jump', 'light', 'heavy', 'sp1', 'sp2'].includes(m.k)) net.redge[m.k] = true;
+      else if (m.on && ['jump', 'light', 'heavy', 'sp1', 'sp2', 'dance', 'insult'].includes(m.k)) net.redge[m.k] = true;
     } else if (m.t === 'again' && phase === 'over') startOnlineMatch();
   }
   function joinRoom(code) {
@@ -1277,6 +1396,7 @@
   function onGuestData(m) {
     if (!m || typeof m !== 'object') return;
     gotMsg();
+    if (handlePing(m)) return;
     if (m.t === 'start') {
       pick = m.host === 'rooster' ? 'cat' : 'rooster';
       SPECIALS[pick].forEach((sp, i) => { $('sp' + (i + 1) + 't').textContent = sp.label; });
@@ -1293,7 +1413,7 @@
   }
   function leaveOnline() {
     const p = net.peer;
-    net.role = null; net.conn = null; net.peer = null; lastRecv = 0;
+    net.role = null; net.conn = null; net.peer = null; lastRecv = 0; pingMs = null;
     try { p && p.destroy(); } catch (e) {}
   }
   $('share').addEventListener('click', () => {
@@ -1303,6 +1423,25 @@
     else { try { navigator.clipboard.writeText(link); } catch (e) {} $('lobbyTxt').textContent = 'Ссылка скопирована: ' + link; }
   });
   $('lobbyBack').addEventListener('click', () => { leaveOnline(); toMenu(); });
+
+  // join by typing the room code
+  const CODE_RE = /^[abcdefghjkmnpqrstuvwxyz23456789]{5}$/;
+  $('joinBtn').addEventListener('click', () => {
+    show('select', false); show('join', true); $('joinErr').textContent = ''; $('codeIn').value = '';
+    setTimeout(() => $('codeIn').focus(), 50);
+  });
+  $('codeIn').addEventListener('input', () => {
+    $('codeIn').value = $('codeIn').value.replace(/[^a-zA-Z0-9]/g, '').slice(0, 5); $('joinErr').textContent = '';
+  });
+  const tryJoin = () => {
+    const code = $('codeIn').value.trim().toLowerCase();
+    if (!CODE_RE.test(code)) { $('joinErr').textContent = 'код — 5 букв/цифр, как в лобби у друга'; return; }
+    $('codeIn').blur(); show('join', false); joinRoom(code);
+  };
+  $('joinGo').addEventListener('click', tryJoin);
+  $('codeIn').addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') tryJoin(); });
+  $('codeIn').addEventListener('keyup', e => e.stopPropagation());
+  $('joinBack').addEventListener('click', () => { show('join', false); show('select', true); });
 
   // auto-join when opened from an invite (?room=xxxxx or Telegram startapp=room_xxxxx)
   const startParam = (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
@@ -1317,7 +1456,7 @@
   };
   fitCanvas(); buildBg(); preview('pvR', 'rooster'); preview('pvC', 'cat');
   phase = 'menu';
-  if (/^[a-z0-9]{5}$/.test(roomFromUrl)) joinRoom(roomFromUrl);
+  if (CODE_RE.test(roomFromUrl.toLowerCase())) joinRoom(roomFromUrl.toLowerCase());
   requestAnimationFrame(loop);
 })();
 </script>
