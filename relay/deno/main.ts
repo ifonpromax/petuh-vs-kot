@@ -17,12 +17,18 @@ const json = (o: unknown, status = 200) =>
 
 type Role = "host" | "guest";
 type Presence = { host?: number; guest?: number };
-const kv = await Deno.openKv();
+// Deno KV / BroadcastChannel are used when the platform offers them; otherwise everything is
+// kept in this isolate's memory (fine as long as both players land on the same instance).
+let kv: Deno.Kv | null = null;
+try { kv = await Deno.openKv(); } catch (e) { console.warn("KV unavailable, using memory:", (e as Error)?.message); }
+const memPresence = new Map<string, Presence>();
 const local = new Map<string, { host?: WebSocket; guest?: WebSocket }>();
-const channels = new Map<string, BroadcastChannel>();
+const channels = new Map<string, BroadcastChannel | null>();
 
 async function presence(code: string): Promise<Presence> {
-  const p = (await kv.get<Presence>(["room", code])).value || {};
+  let p: Presence = {};
+  if (kv) { try { p = (await kv.get<Presence>(["room", code])).value || {}; } catch { p = memPresence.get(code) || {}; } }
+  else p = memPresence.get(code) || {};
   const now = Date.now();
   if (p.host && now - p.host > STALE_MS) delete p.host;
   if (p.guest && now - p.guest > STALE_MS) delete p.guest;
@@ -31,20 +37,22 @@ async function presence(code: string): Promise<Presence> {
 async function touch(code: string, role: Role, on: boolean) {
   const p = await presence(code);
   if (on) p[role] = Date.now(); else delete p[role];
-  await kv.set(["room", code], p, { expireIn: 6 * 3600_000 });
+  memPresence.set(code, p);
+  if (kv) { try { await kv.set(["room", code], p, { expireIn: 6 * 3600_000 }); } catch { /* memory copy already updated */ } }
 }
 
-function channel(code: string): BroadcastChannel {
-  let bc = channels.get(code);
-  if (!bc) {
+function channel(code: string): BroadcastChannel | null {
+  if (channels.has(code)) return channels.get(code)!;
+  let bc: BroadcastChannel | null = null;
+  try {
     bc = new BroadcastChannel("room-" + code);
     bc.onmessage = (e) => {
       const { to, data } = e.data as { to: Role; data: string };
       const ws = local.get(code)?.[to];
       if (ws && ws.readyState === WebSocket.OPEN) try { ws.send(data); } catch { /* gone */ }
     };
-    channels.set(code, bc);
-  }
+  } catch (e) { console.warn("BroadcastChannel unavailable:", (e as Error)?.message); }
+  channels.set(code, bc);
   return bc;
 }
 // deliver to the other side: same isolate directly, otherwise via BroadcastChannel
@@ -52,7 +60,8 @@ function forward(code: string, from: Role, data: string) {
   const to: Role = from === "host" ? "guest" : "host";
   const ws = local.get(code)?.[to];
   if (ws && ws.readyState === WebSocket.OPEN) { try { ws.send(data); } catch { /* gone */ } return; }
-  channel(code).postMessage({ to, data });
+  const bc = channel(code);
+  if (bc) bc.postMessage({ to, data });
 }
 
 async function turnCreds() {
