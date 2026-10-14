@@ -82,9 +82,13 @@ async function turnCreds() {
   }
 }
 
+const ISO_ID = Math.random().toString(36).slice(2, 8);
+let bcOk = true; try { new BroadcastChannel("probe").close(); } catch { bcOk = false; }
+
 Deno.serve(async (req) => {
   const url = new URL(req.url);
   if (req.method === "OPTIONS") return new Response(null, { headers: CORS });
+  if (url.pathname === "/health") return json({ kv: !!kv, bc: bcOk, iso: ISO_ID, region: Deno.env.get("DENO_REGION") || null, rooms: local.size });
   if (url.pathname === "/turn") return json(await turnCreds());
 
   const m = url.pathname.match(/^\/room\/([a-z0-9]{5})(\/check)?$/);
