@@ -87,6 +87,13 @@
   .card.r { border-color: #e3263a88; }
   .card.c { border-color: #ffcf3a88; }
   .row { display: flex; gap: 10px; margin-top: 14px; }
+  .quote {
+    font-family: "Segoe UI", sans-serif; font-size: 15px; font-weight: 600; max-width: 440px; line-height: 1.35;
+    background: #ffffff14; border-left: 4px solid var(--gold); border-radius: 10px; padding: 8px 12px; margin-top: 6px; text-align: left;
+  }
+  .quote b { display: block; font-family: Impact, sans-serif; font-weight: normal; font-size: 12px; color: var(--gold); letter-spacing: .5px; margin-top: 3px; }
+  .quote.lose { font-size: 13px; opacity: .75; border-left-color: #ffffff55; }
+  .quote.lose b { color: #ffffffaa; }
   .big {
     font: inherit; font-size: 18px; color: #000; background: var(--gold); border: none; border-radius: 14px; padding: 12px 20px;
     box-shadow: 0 4px 0 #a47300;
@@ -136,6 +143,8 @@
     <div class="screen" id="result">
       <div class="title" id="resTitle">ПОБЕДА</div>
       <div class="sub" id="resSub"></div>
+      <div class="quote" id="resWin"></div>
+      <div class="quote lose" id="resLose"></div>
       <div class="row">
         <button class="big" id="again">ЕЩЁ РАЗ</button>
         <button class="big alt" id="change">СМЕНИТЬ БОЙЦА</button>
@@ -416,9 +425,9 @@
     fl.frequency.setValueAtTime(f1, t0); fl.frequency.exponentialRampToValueAtTime(Math.max(30, f2), t0 + dur);
     env(g, t0, 0.004, dur, peak || 0.4); s.connect(fl); fl.connect(g); g.connect(master); s.start(t0); s.stop(t0 + dur + 0.05);
   }
-  function voice(notes, type, formant) { // crude "voice": saw through a formant filter
+  function voice(notes, type, formant, delay) { // crude "voice": saw through a formant filter
     if (muted || !audio()) return;
-    let t = ac.currentTime;
+    let t = ac.currentTime + (delay || 0);
     const fl = ac.createBiquadFilter(); fl.type = 'bandpass'; fl.frequency.value = formant; fl.Q.value = 3; fl.connect(master);
     for (const [f1, f2, d, pk] of notes) {
       const o = ac.createOscillator(), g = ac.createGain(), lfo = ac.createOscillator(), lg = ac.createGain();
@@ -439,6 +448,8 @@
     splat() { noise(0.22, 700, 200, 0.7, 0.6); tone(220, 70, 0.18, 'sine', 0.35); },
     crow() { voice([[520, 700, 0.12, 0.35], [700, 980, 0.14, 0.4], [980, 820, 0.12, 0.4], [820, 1150, 0.18, 0.45], [1150, 560, 0.35, 0.35]], 'sawtooth', 1600); },
     meow() { voice([[600, 820, 0.12, 0.3], [820, 980, 0.14, 0.35], [980, 520, 0.38, 0.3]], 'sawtooth', 1100); },
+    sadCrow(d) { voice([[460, 520, 0.18, 0.3], [520, 400, 0.22, 0.28], [400, 300, 0.3, 0.25], [300, 170, 0.7, 0.22]], 'sawtooth', 1200, d); },
+    sadMeow(d) { voice([[520, 600, 0.2, 0.28], [600, 420, 0.35, 0.26], [420, 230, 0.8, 0.22]], 'sawtooth', 900, d); },
     dive() { tone(380, 1700, 0.45, 'sine', 0.18); noise(0.45, 600, 3000, 1, 0.15); },
     boom() { tone(95, 28, 0.55, 'sine', 1); noise(0.45, 400, 80, 0.6, 0.8); },
     dig() { noise(0.06, 1400, 600, 1.5, 0.22); },
@@ -457,6 +468,62 @@
   syncMute();
   muteBtn.addEventListener('pointerdown', e => { e.stopPropagation(); muted = !muted; syncMute(); try { localStorage.setItem('pvk_muted', muted ? '1' : '0'); } catch (e2) {} if (!muted) { audio(); SFX.light(); } });
   window.addEventListener('pointerdown', () => audio(), { once: true });
+
+  // ---------- victory / defeat quotes ----------
+  const QUOTES = {
+    rooster: {
+      win: [
+        'Кукареку, чертила. Будильник прозвенел',
+        'Ехала газ по бездорожью — и прямо по тебе',
+        'Я встаю в 4 утра. Ты не готов к такому графику',
+        'KFC прислали мне открытку с благодарностью',
+        'Перья не трогай, это коллекционное',
+        'Чемпион района не бегает. Чемпион района кукарекает',
+        'Яйцо было последнее. Не за что',
+        'Колян, неси насвай. Заработал честно',
+        'Сначала гребешок, потом корона',
+        'Иди умойся, желток с морды вытри',
+      ],
+      lose: [
+        'Это не нокаут, я просто прилёг на зерно',
+        'Ладно… на бульон пойду',
+        'Солнце в глаза светило. И кот тоже',
+        'Я поддался. Петухи вообще добрые',
+        'Позвоните в KFC… скажите, что я не приду',
+        'Перья выпали сами. Возраст',
+        'Реванш на рассвете. Я всё равно раньше проснусь',
+        'Колян, ставку не отдавай, это договорняк',
+        'Кукаре… ку… кх…',
+        'Записал в блокнот обид. Страница три',
+      ],
+    },
+    cat: {
+      win: [
+        'Даже сигарету не потушил',
+        'Ты дрался как курица. А, ну да',
+        'Закопал. Как и всё остальное в своей жизни',
+        'Девять жизней, ноль поражений',
+        'Мяу. В переводе: иди отсюда',
+        'Наггетсы сегодня за мой счёт',
+        'Очки не снимал. Повода не было',
+        'Двести рублей коляну всё равно не отдам',
+        'Пахнет жареным. Это ты',
+        'Лоток чище, чем твоя техника',
+      ],
+      lose: [
+        'Лапа соскользнула. Бывает',
+        'Минус одна жизнь. Осталось восемь, не расслабляйся',
+        'Я специально. Хотел посмотреть, как ты радуешься',
+        'Пойду закопаю этот позор',
+        'Сигарета потухла — и вся сила ушла',
+        'Шерсть дыбом, гордость в лотке',
+        'Я кот. Мне вообще всё равно. Почти',
+        'Колян, это ты ему подсказывал?',
+        'Очки треснули. Это уже перебор, петух',
+        'Ладно, сегодня твой день. Завтра — мой обед',
+      ],
+    },
+  };
 
   // ---------- specials ----------
   const SPECIALS = {
@@ -804,14 +871,20 @@
     phase = 'over';
     const win = wins[0] > wins[1];
     document.getElementById('resTitle').textContent = win ? 'ПОБЕДА!' : 'ПОТРАЧЕНО';
-    const me = CHARS[pick].name, en = CHARS[pick === 'rooster' ? 'cat' : 'rooster'].name;
-    const lines = win
-      ? [`${me} забирает насвай. колян доволен`, `${en} ушёл в закат`, `${me} — чемпион района`]
-      : [`${en} оказался сильнее. обидно`, `${me} идёт на ТО к коляну`, `реванш? ${en} ждёт`];
-    document.getElementById('resSub').textContent = `${wins[0]} : ${wins[1]} · ` + lines[Math.floor(Math.random() * lines.length)];
+    const other = pick === 'rooster' ? 'cat' : 'rooster';
+    const winner = win ? pick : other, loser = win ? other : pick;
+    const any = (arr) => arr[Math.floor(Math.random() * arr.length)];
+    document.getElementById('resSub').textContent = `${wins[0]} : ${wins[1]}`;
+    const say = (id, kind, text) => {
+      const el = document.getElementById(id); el.textContent = `«${text}»`;
+      const b = document.createElement('b'); b.textContent = '— ' + CHARS[kind].name; el.appendChild(b);
+    };
+    say('resWin', winner, any(QUOTES[winner].win));
+    say('resLose', loser, any(QUOTES[loser].lose));
     document.getElementById('result').classList.add('show');
     haptic(win ? 'heavy' : 'light');
     if (win) SFX.win(); else SFX.lose();
+    if (loser === 'rooster') SFX.sadCrow(0.75); else SFX.sadMeow(0.75);
   }
 
   // ---------- render ----------
