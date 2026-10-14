@@ -40,7 +40,9 @@
     background: #000b; pointer-events: none;
   }
   .b.sp.ready { box-shadow: 0 4px 0 #0008, 0 0 12px #ffb43c; }
-  #mute {
+  #music { right: 46px !important; }
+  #music.off { opacity: .45; text-decoration: line-through; }
+  #mute, #music {
     position: absolute; right: 6px; bottom: 6px; z-index: 4; width: 34px; height: 34px; border-radius: 10px;
     border: 2px solid #ffffff30; background: #0008; color: #fff; font-size: 16px; padding: 0;
   }
@@ -116,6 +118,7 @@
   <div id="stage">
     <canvas id="game" width="800" height="500"></canvas>
     <button id="mute">🔊</button>
+    <button id="music">🎵</button>
 
     <div class="screen show" id="select">
       <div class="title">ПЕТУХ vs КОТ</div>
@@ -467,7 +470,56 @@
   const syncMute = () => { muteBtn.textContent = muted ? '🔇' : '🔊'; };
   syncMute();
   muteBtn.addEventListener('pointerdown', e => { e.stopPropagation(); muted = !muted; syncMute(); try { localStorage.setItem('pvk_muted', muted ? '1' : '0'); } catch (e2) {} if (!muted) { audio(); SFX.light(); } });
-  window.addEventListener('pointerdown', () => audio(), { once: true });
+  window.addEventListener('pointerdown', () => { audio(); startMusic(); }, { once: true });
+
+  // ---------- background music (step sequencer, 128 BPM, A minor) ----------
+  let musicOn = true, musicGain = null, musicTimer = null, nextT = 0, stepI = 0;
+  try { musicOn = localStorage.getItem('pvk_music') !== '0'; } catch (e) {}
+  const SPB = 60 / 128 / 4;
+  const BASS = [110, 87.31, 130.81, 98];                       // A  F  C  G
+  const CHORD = [[220, 261.63, 329.63], [174.61, 220, 261.63], [261.63, 329.63, 392], [196, 246.94, 293.66]];
+  const ARP = [0, 1, 2, 1, 0, 2, 1, 2];
+  function mOsc(f, t, d, type, g, f2) {
+    const o = ac.createOscillator(), e = ac.createGain();
+    o.type = type; o.frequency.setValueAtTime(f, t); if (f2) o.frequency.exponentialRampToValueAtTime(f2, t + d);
+    e.gain.setValueAtTime(0.0001, t); e.gain.exponentialRampToValueAtTime(g, t + 0.005); e.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    o.connect(e); e.connect(musicGain); o.start(t); o.stop(t + d + 0.02);
+  }
+  function mNoise(t, d, freq, type, g) {
+    const s = ac.createBufferSource(), fl = ac.createBiquadFilter(), e = ac.createGain();
+    s.buffer = getNoise(); fl.type = type; fl.frequency.value = freq;
+    e.gain.setValueAtTime(g, t); e.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    s.connect(fl); fl.connect(e); e.connect(musicGain); s.start(t, Math.random() * 0.5); s.stop(t + d + 0.02);
+  }
+  function scheduleMusic() {
+    if (!ac || !musicGain) return;
+    const fight = phase === 'fight' || phase === 'intro' || phase === 'end';
+    const target = muted || !musicOn ? 0.0001 : (fight ? 0.32 : 0.16);
+    musicGain.gain.setTargetAtTime(target, ac.currentTime, 0.25);
+    if (nextT < ac.currentTime - 0.2) nextT = ac.currentTime + 0.05;
+    while (nextT < ac.currentTime + 0.15) {
+      const s = stepI % 16, bar = Math.floor(stepI / 16) % 4, t = nextT;
+      if (s % 4 === 0) mOsc(150, t, 0.18, 'sine', 0.9, 40);                         // kick
+      if (fight && (s === 4 || s === 12)) { mNoise(t, 0.14, 1800, 'bandpass', 0.45); mOsc(220, t, 0.08, 'triangle', 0.2, 120); } // snare
+      if (fight && s % 2 === 1) mNoise(t, 0.035, 8000, 'highpass', 0.12);         // hat
+      if (s % 2 === 0) mOsc(BASS[bar] * (s % 4 === 2 ? 2 : 1), t, SPB * 1.7, 'sawtooth', 0.14);   // bass
+      if (fight && s % 2 === 0 && !(bar === 3 && s >= 12)) mOsc(CHORD[bar][ARP[(s / 2) % 8]] * 2, t, SPB * 1.3, 'square', 0.035); // arp
+      if (!fight && s === 0) CHORD[bar].forEach(f => mOsc(f, t, SPB * 15, 'triangle', 0.05));  // soft pad in menus
+      nextT += SPB; stepI++;
+    }
+  }
+  function startMusic() {
+    if (!audio()) return;
+    if (!musicGain) { musicGain = ac.createGain(); musicGain.gain.value = 0.0001; musicGain.connect(ac.destination); }
+    if (!musicTimer) { nextT = ac.currentTime + 0.1; musicTimer = setInterval(scheduleMusic, 30); }
+  }
+  const musicBtn = document.getElementById('music');
+  const syncMusic = () => musicBtn.classList.toggle('off', !musicOn);
+  syncMusic();
+  musicBtn.addEventListener('pointerdown', e => {
+    e.stopPropagation(); musicOn = !musicOn; syncMusic(); startMusic();
+    try { localStorage.setItem('pvk_music', musicOn ? '1' : '0'); } catch (e2) {}
+  });
 
   // ---------- victory / defeat quotes ----------
   const QUOTES = {
