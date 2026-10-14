@@ -25,10 +25,42 @@ const memPresence = new Map<string, Presence>();
 const local = new Map<string, { host?: WebSocket; guest?: WebSocket }>();
 const channels = new Map<string, BroadcastChannel | null>();
 
+// Without KV, presence is asked from every isolate over a shared BroadcastChannel ("who holds room X?")
+const askBc = (() => { try { return new BroadcastChannel("rooms-presence"); } catch { return null; } })();
+const askWaiters = new Map<string, (p: Presence) => void>();
+if (askBc) askBc.onmessage = (e) => {
+  const m = e.data as { q?: string; a?: string; code: string; id: string; p?: Presence };
+  if (m.q === "who") {
+    const mine = memPresence.get(m.code);
+    const live: Presence = {};
+    const s = local.get(m.code);
+    if (s?.host && s.host.readyState === WebSocket.OPEN) live.host = mine?.host || Date.now();
+    if (s?.guest && s.guest.readyState === WebSocket.OPEN) live.guest = mine?.guest || Date.now();
+    if (live.host || live.guest) askBc.postMessage({ a: "here", code: m.code, id: m.id, p: live });
+  } else if (m.a === "here") {
+    const w = askWaiters.get(m.id); if (w && m.p) w(m.p);
+  }
+};
 async function presence(code: string): Promise<Presence> {
   let p: Presence = {};
   if (kv) { try { p = (await kv.get<Presence>(["room", code])).value || {}; } catch { p = memPresence.get(code) || {}; } }
-  else p = memPresence.get(code) || {};
+  else {
+    p = { ...(memPresence.get(code) || {}) };
+    // only trust local memory for sockets that are actually ours and open; merge what other isolates report
+    const s = local.get(code);
+    if (p.host && !(s?.host && s.host.readyState === WebSocket.OPEN)) delete p.host;
+    if (p.guest && !(s?.guest && s.guest.readyState === WebSocket.OPEN)) delete p.guest;
+    if (askBc && (!p.host || !p.guest)) {
+      const id = Math.random().toString(36).slice(2);
+      const remote = await new Promise<Presence>((resolve) => {
+        const acc: Presence = {};
+        const t = setTimeout(() => { askWaiters.delete(id); resolve(acc); }, 350);
+        askWaiters.set(id, (r) => { Object.assign(acc, r); if (acc.host && acc.guest) { clearTimeout(t); askWaiters.delete(id); resolve(acc); } });
+        askBc.postMessage({ q: "who", code, id });
+      });
+      p = { ...remote, ...p };
+    }
+  }
   const now = Date.now();
   if (p.host && now - p.host > STALE_MS) delete p.host;
   if (p.guest && now - p.guest > STALE_MS) delete p.guest;
