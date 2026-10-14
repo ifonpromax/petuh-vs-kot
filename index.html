@@ -1149,6 +1149,11 @@
       c.fillStyle = 'rgba(0,0,0,.55)'; c.fillRect(400 - bw / 2, 62, bw, 20);
       ell(c, 400 - bw / 2 + 12, 72, 4, 4, col);
       txt(c, (ms == null ? 'пинг …' : `пинг ${ms} мс`) + via, 409, 78, 14, col, 'center', 3);
+      if (net.transport === 'relay' && net.myDiag) {
+        const v = p2pVerdict(net.myDiag, net.peerDiag);
+        c.fillStyle = 'rgba(0,0,0,.45)'; c.fillRect(190, 84, 420, 16);
+        txt(c, v, 400, 96, 11, '#ffb3b3', 'center', 2);
+      }
     }
     if (P && P.state !== 'ko') {
       c.save(); c.globalAlpha = 0.9;
@@ -1395,6 +1400,7 @@
   let lastErr = null, guestTimer = null, snapSeq = 0, lastSeq = -1;
 
   async function iceConfig() {
+    if (/[?&]noice=1/.test(location.search)) { net.turn = false; return { iceServers: [], iceTransportPolicy: 'relay' }; } // test hook: make P2P fail
     try {
       const r = await fetch(RELAY_URL + '/turn', { cache: 'no-store' });
       const j = await r.json();
@@ -1423,7 +1429,7 @@
   function makeRtc(cfg, signal, onMsg, onOpen, onClose) {
     if (!window.RTCPeerConnection) return null;
     const pc = new RTCPeerConnection(cfg);
-    const rc = { kind: 'rtc', open: false, pc, ctl: null, fast: null, remoteSet: false, pending: [],
+    const rc = { kind: 'rtc', open: false, pc, ctl: null, fast: null, remoteSet: false, pending: [], diag: { cands: new Set(), ice: 'new', conn: 'new' },
       send(m) { if (this.ctl && this.ctl.readyState === 'open') try { this.ctl.send(JSON.stringify(m)); } catch (e) {} },
       sendFast(m) { if (this.fast && this.fast.readyState === 'open') { try { this.fast.send(JSON.stringify(m)); } catch (e) {} } else this.send(m); },
       close() { this.open = false; try { pc.close(); } catch (e) {} },
@@ -1437,11 +1443,47 @@
         ch.onclose = () => { if (rc.open) { rc.open = false; onClose(); } };
       }
     };
-    pc.onicecandidate = (e) => { if (e.candidate) signal({ t: 'ice', c: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate }); };
+    pc.onicecandidate = (e) => {
+      if (!e.candidate) return;
+      const typ = e.candidate.type || ((e.candidate.candidate || '').match(/ typ (\w+)/) || [])[1];
+      if (typ) rc.diag.cands.add(typ);
+      signal({ t: 'ice', c: e.candidate.toJSON ? e.candidate.toJSON() : e.candidate });
+    };
     pc.ondatachannel = (e) => { if (e.channel.label === 'ctl') rc.ctl = e.channel; else rc.fast = e.channel; rc.wire(e.channel); };
-    pc.onconnectionstatechange = () => { if (pc.connectionState === 'failed' && rc.open) { rc.open = false; onClose(); } };
+    pc.oniceconnectionstatechange = () => { rc.diag.ice = pc.iceConnectionState; };
+    pc.onconnectionstatechange = () => { rc.diag.conn = pc.connectionState; if (pc.connectionState === 'failed' && rc.open) { rc.open = false; onClose(); } };
     return rc;
   }
+  // human-readable verdict about one side's NAT, from the candidate types it managed to gather
+  function diagOf(d) {
+    if (!d) return null;
+    const c = d.cands instanceof Set ? [...d.cands] : (d.cands || []);
+    return { stun: c.includes('srflx'), relay: c.includes('relay'), cands: c, state: d.conn || d.ice || '' };
+  }
+  function p2pVerdict(me, peer) {
+    if (!me) return '';
+    const s = (x) => (x ? (x.stun ? 'STUN ✓' : 'STUN ✗') : '?');
+    let why = '';
+    if (!me.stun) why = 'у тебя закрыт UDP (VPN/файрвол?)';
+    else if (peer && !peer.stun) why = 'у друга закрыт UDP (VPN/файрвол?)';
+    else if (peer && peer.stun) why = 'симметричный NAT — нужен TURN';
+    return `P2P ✗ · ты: ${s(me)} · друг: ${s(peer)}${why ? ' · ' + why : ''}`;
+  }
+  // keep knocking on the direct path while the match runs over the relay
+  async function iceRestart() {
+    const rc = net.rtc;
+    if (net.role !== 'host' || net.transport !== 'relay' || !rc || !net.ws) return;
+    if (net.restarts == null) net.restarts = 0;
+    if (net.restarts >= 6) return;
+    net.restarts++;
+    try {
+      const offer = await rc.pc.createOffer({ iceRestart: true });
+      await rc.pc.setLocalDescription(offer);
+      rc.remoteSet = false; rc.pending = [];
+      net.ws.send({ t: 'offer', sdp: rc.pc.localDescription, restart: true });
+    } catch (e) { console.warn('ice restart failed', e); }
+  }
+  setInterval(iceRestart, 20000);
   function dropRtc() { const rc = net.rtc; net.rtc = null; try { rc && rc.close(); } catch (e) {} }
   // what the HUD shows next to the ping
   function viaLabel() {
@@ -1485,6 +1527,7 @@
         }
         if (m.t === 'answer' && net.rtc && !net.rtc.remoteSet) { try { await net.rtc.setRemote(m.sdp); } catch (e) { console.warn(e); } return; }
         if (m.t === 'ice' && net.rtc) { net.rtc.addIce(m.c); return; }
+        if (m.t === 'diag') { net.peerDiag = diagOf(m.d); return; }
         if (net.conn === ws) onHostData(m);
       },
       close(was, cc) {
@@ -1497,7 +1540,11 @@
     setTimeout(() => { if (net.role === 'host' && net.code === code && !ws.open) netError('relay'); }, 12000);
   }
   async function startRtcAsHost(ws, code) {
-    const goRelay = () => { if (net.role !== 'host' || net.code !== code || net.conn) return; net.conn = ws; net.transport = 'relay'; startOnlineMatch(); };
+    const goRelay = () => {
+      if (net.role !== 'host' || net.code !== code || net.conn) return;
+      net.conn = ws; net.transport = 'relay'; net.restarts = 0; startOnlineMatch();
+      if (net.rtc) { net.myDiag = diagOf(net.rtc.diag); ws.send({ t: 'diag', d: { cands: net.myDiag.cands, conn: net.myDiag.state } }); }
+    };
     if (FORCE_RELAY || !window.RTCPeerConnection) { goRelay(); return; }
     const cfg = await iceConfig();
     if (net.role !== 'host' || net.code !== code) return;
@@ -1548,6 +1595,22 @@
       open() { if (net.role === 'guest' && net.code === code) $('lobbyTxt').textContent = 'Комната найдена! Соединяемся…'; },
       async msg(m) {
         if (net.role !== 'guest' || net.code !== code) return;
+        if (m.t === 'diag') { // host gave up on P2P: swap verdicts so both HUDs can show them
+          net.peerDiag = diagOf(m.d);
+          if (net.rtc) { net.myDiag = diagOf(net.rtc.diag); ws.send({ t: 'diag', d: { cands: net.myDiag.cands, conn: net.myDiag.state } }); }
+          return;
+        }
+        if (m.t === 'offer' && m.restart && net.rtc) { // host retrying the direct path mid-match
+          const rc = net.rtc;
+          try {
+            rc.remoteSet = false; rc.pending = [];
+            await rc.setRemote(m.sdp);
+            const ans = await rc.pc.createAnswer();
+            await rc.pc.setLocalDescription(ans);
+            ws.send({ t: 'answer', sdp: rc.pc.localDescription });
+          } catch (e) { console.warn('restart answer failed', e); }
+          return;
+        }
         if (m.t === 'offer') {
           if (net.rtc || FORCE_RELAY) return;
           const cfg = await cfgP;
@@ -1614,7 +1677,7 @@
   }
   function leaveOnline() {
     const rc = net.rtc, ws = net.ws;
-    net.role = null; net.conn = null; net.rtc = null; net.ws = null; net.transport = null; net.guestHere = false;
+    net.role = null; net.conn = null; net.rtc = null; net.ws = null; net.transport = null; net.guestHere = false; net.myDiag = net.peerDiag = null; net.restarts = 0;
     lastRecv = 0; pingMs = null; peerPaused = false; pendingStart = false;
     clearTimeout(guestTimer);
     try { rc && rc.close(); } catch (e) {}
