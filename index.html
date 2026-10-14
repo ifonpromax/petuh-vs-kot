@@ -796,7 +796,7 @@
     }
     if (f.burn > 0) {
       f.burn--;
-      if (f.burn % 30 === 0 && f.state !== 'ko') { f.hp -= 1; checkKO(f, -f.facing); }
+      if (f.burn % 30 === 0 && f.state !== 'ko' && net.role !== 'guest') { f.hp -= 1; checkKO(f, -f.facing); }
       if (f.burn % 4 === 0) particles.push({ x: f.x + (Math.random() - 0.5) * 50, y: f.y - 60 - Math.random() * 150, vx: 0, vy: -1.5, life: 22, col: Math.random() < 0.5 ? '#ff7a00' : '#ffd23c', kind: 'spark' });
     }
     if (f.state === 'special') { runSpecial(f, o); return; }
@@ -821,17 +821,17 @@
     f.st++;
     const s = f.st;
     if (f.sp === 'egg') {
-      if (s === 10) { SFX.egg(); projectiles.push({ kind: 'egg', owner: f, x: f.x + f.facing * 55, y: f.y - 165, vx: f.facing * 8.5, vy: -5.5, g: 0.3, r: 12, life: 120, rot: 0 }); }
+      if (s === 10) { SFX.egg(); if (net.role !== 'guest') projectiles.push({ kind: 'egg', owner: f, x: f.x + f.facing * 55, y: f.y - 165, vx: f.facing * 8.5, vy: -5.5, g: 0.3, r: 12, life: 120, rot: 0 }); }
       if (s >= 26) endSpecial(f);
     } else if (f.sp === 'flick') {
-      if (s === 9) { SFX.flick(); f.noCig = 200; projectiles.push({ kind: 'ember', owner: f, x: f.x + f.facing * 70, y: f.y - 172, vx: f.facing * 11, vy: 0, g: 0, r: 10, life: 90, rot: 0 }); }
+      if (s === 9) { SFX.flick(); f.noCig = 200; if (net.role !== 'guest') projectiles.push({ kind: 'ember', owner: f, x: f.x + f.facing * 70, y: f.y - 172, vx: f.facing * 11, vy: 0, g: 0, r: 10, life: 90, rot: 0 }); }
       if (s >= 24) endSpecial(f);
     } else if (f.sp === 'dig') {
       if (s < 38 && s % 6 === 0) {
         SFX.dig();
         for (let i = 0; i < 3; i++) particles.push({ x: f.x + f.facing * 30, y: GROUND - 5, vx: -f.facing * (2 + Math.random() * 3), vy: -2 - Math.random() * 4, life: 30, col: Math.random() < 0.5 ? '#6b4423' : '#8a5a2b', kind: 'fur', rot: Math.random() * 6 });
       }
-      if (s === 38) { SFX.dirt(); SFX.meow(); projectiles.push({ kind: 'dirt', owner: f, x: f.x + f.facing * 70, y: f.y - 120, vx: f.facing * 9.5, vy: -0.6, g: 0.03, r: 38, life: 34, rot: 0 }); }
+      if (s === 38) { SFX.dirt(); SFX.meow(); if (net.role !== 'guest') projectiles.push({ kind: 'dirt', owner: f, x: f.x + f.facing * 70, y: f.y - 120, vx: f.facing * 9.5, vy: -0.6, g: 0.03, r: 38, life: 34, rot: 0 }); }
       if (s >= 54) endSpecial(f);
     } else if (f.sp === 'dive') {
       if (s <= 30) { // rise, flapping
@@ -863,6 +863,7 @@
   }
 
   function checkKO(def, dir) {
+    if (net.role === 'guest') return;
     if (def.hp <= 0 && def.state !== 'ko') {
       def.hp = 0; def.state = 'ko'; def.vy = -7; def.y = Math.min(def.y, GROUND - 1); def.vx = dir * 4; shake = 16; haptic('heavy'); SFX.ko();
       def.sp = null; def.landT = 0;
@@ -870,7 +871,9 @@
   }
 
   // generic damage: opts { stun, push, up, heavy, words, hx, hy, dizzy, unblockable }
-  function hurt(att, def, dmg, o) {
+  function hurt(...args) { const pa = sfxActor; sfxActor = null; try { return hurtImpl(...args); } finally { sfxActor = pa; } }
+  function hurtImpl(att, def, dmg, o) {
+    if (net.role === 'guest') return false; // damage is the host's call; the guest only predicts its own moves
     const mul = att.isAI ? AI_CFG[difficulty].dmg : 1;
     const hx = o.hx, hy = o.hy;
     if (def.blocking && def.facing === -att.facing && !o.unblockable) {
@@ -979,7 +982,7 @@
     const live = phase === 'fight';
     const pc = live ? { left: input.left, right: input.right, block: input.block, down: input.down, jump: input.jumpP, light: input.lightP, heavy: input.heavyP, sp1: input.sp1P, sp2: input.sp2P, dance: input.danceP, insult: input.insultP } : {};
     input.jumpP = input.lightP = input.heavyP = input.sp1P = input.sp2P = false;
-    if (live) { control(P, pc); control(A, net.role === 'host' ? remoteCmd() : aiThink(A, P)); }
+    if (live) { control(P, pc); sfxActor = 'A'; control(A, net.role === 'host' ? remoteCmd() : aiThink(A, P)); sfxActor = null; }
     else {
       if (P.state !== 'special') P.vx = 0; if (A.state !== 'special') A.vx = 0; P.blocking = A.blocking = false;
       if (phase === 'end') { // rub it in after the KO
@@ -991,7 +994,7 @@
     input.danceP = input.insultP = false;
     if (!busy(P)) P.facing = Math.sign(A.x - P.x) || 1;
     if (!busy(A)) A.facing = Math.sign(P.x - A.x) || -1;
-    physics(P, A); physics(A, P);
+    physics(P, A); sfxActor = 'A'; physics(A, P); sfxActor = null;
     // body push (not while one is diving from above)
     const min = 88, dx = A.x - P.x;
     if (Math.abs(dx) < min && Math.abs(A.y - P.y) < 120 && P.sp !== 'dive' && A.sp !== 'dive') {
@@ -1059,7 +1062,7 @@
   }
   function drawFighter(c, f) {
     c.save();
-    c.translate(f.x, f.y);
+    c.translate(f.x + (f.ox || 0), f.y + (f.oy || 0)); // ox/oy: decaying offset that hides prediction corrections
     ell(c, 0, GROUND - f.y + 2, Math.max(10, 46 * (1 - (GROUND - f.y) / 400)), 9, 'rgba(0,0,0,.35)');
     if (f.state === 'ko' && f.y >= GROUND) c.rotate(f.facing * -1.35);
     else if (f.state === 'hit') c.rotate(f.facing * -0.12);
@@ -1227,7 +1230,7 @@
   function setKey(k, on) {
     if (k === 'left' || k === 'right' || k === 'block' || k === 'down') input[k] = on;
     if (on && !held[k]) { if (k === 'jump') input.jumpP = true; if (k === 'light') input.lightP = true; if (k === 'heavy') input.heavyP = true; if (k === 'sp1') input.sp1P = true; if (k === 'sp2') input.sp2P = true; if (k === 'dance') input.danceP = true; if (k === 'insult') input.insultP = true; }
-    if (net.role === 'guest' && held[k] !== on) netSend({ t: 'i', k, on });
+    if (net.role === 'guest' && held[k] !== on) netSend({ t: 'i', k, on, f: gFrame });
     held[k] = on;
   }
   const pointers = new Map();
@@ -1285,7 +1288,9 @@
   const r1 = (v) => (typeof v === 'number' ? Math.round(v * 10) / 10 : v);
 
   // mirror every sound / haptic the host makes to the guest
-  for (const k of Object.keys(SFX)) { const raw = SFX[k]; SFX[k] = (...a) => { raw(...a); if (net.role === 'host') net.ev.push(['sfx', k, a]); }; SFX[k].raw = raw; }
+  // sfxActor marks sounds caused by the guest's own fighter: the guest already plays those locally (prediction)
+  let sfxActor = null;
+  for (const k of Object.keys(SFX)) { const raw = SFX[k]; SFX[k] = (...a) => { raw(...a); if (net.role === 'host') net.ev.push(['sfx', k, a, sfxActor]); }; SFX[k].raw = raw; }
 
   function netSend(m) { try { if (net.conn && net.conn.open) net.conn.send(m); } catch (e) {} }
   // heartbeat: both sides ping every second; 6s of silence = opponent gone
@@ -1328,7 +1333,7 @@
     const fs = [P, A].map(f => { const o = {}; for (const k of FIELDS) o[k] = Array.isArray(f[k]) ? f[k].slice() : r1(f[k]); return o; });
     const pr = projectiles.map(q => ({ kind: q.kind, x: r1(q.x), y: r1(q.y), vx: q.vx, r: q.r, rot: r1(q.rot), o: q.owner === P ? 0 : 1 }));
     if (net.ev.length) { netSend({ t: 'e', ev: net.ev }); net.ev = []; }   // effects: reliable channel
-    const snap = { t: 's', q: ++snapSeq, ph: phase, pt: phaseT, r: round, w: wins, tm: timer, sh: r1(shake), et: endText, f: fs, pr };
+    const snap = { t: 's', q: ++snapSeq, gf: net.gFrame || 0, ph: phase, pt: phaseT, r: round, w: wins, tm: timer, sh: r1(shake), et: endText, f: fs, pr };
     if (net.conn && net.conn.sendFast) net.conn.sendFast(snap); else netSend(snap);       // state: fast lossy channel
   }
   function fromSnap(old, s) {
@@ -1341,23 +1346,67 @@
   }
   function applyEvent(e) {
     const [t, a, b, c, d] = e;
-    if (t === 'sfx' && SFX[a]) SFX[a].raw(...(b || []));
+    if (t === 'sfx' && SFX[a]) { if (c === 'A') return; SFX[a].raw(...(b || [])); }
     else if (t === 'spark') spark(a, b, c, d);
     else if (t === 'fluff') fluff({ kind: a }, b, c);
     else if (t === 'splat') splat(a, b, c, d);
     else if (t === 'popup') popup(a, b, c, d);
   }
+  // ---- guest-side prediction ----
+  // The guest simulates ITS OWN fighter every frame with the same control/physics the host uses, so moves feel
+  // instant. Each snapshot carries gf = the last guest frame the host has seen; the guest compares its saved state
+  // at that frame with the host's, and on mismatch adopts the host's state and replays its newer inputs on top.
+  const PRED = ['x', 'y', 'vx', 'vy', 'facing', 'state', 'st', 'move', 'sp', 'blocking', 'crouch', 'cd', 'walk', 't', 'dvx', 'dvy', 'landT', 'stun', 'hitDone'];
+  const AUTH = ['hp', 'burn', 'yolk', 'noCig', 'say', 'sayT'];
+  let gFrame = 0; const hist = []; // { f, cmd, x, y, state, sp, move, blocking, crouch } per predicted frame
+  function ownCmd() {
+    const c = { left: input.left, right: input.right, block: input.block, down: input.down, jump: input.jumpP, light: input.lightP, heavy: input.heavyP, sp1: input.sp1P, sp2: input.sp2P };
+    input.jumpP = input.lightP = input.heavyP = input.sp1P = input.sp2P = false;
+    return c;
+  }
+  function simOwn(cmd) { // one frame of my fighter against the opponent as last reported
+    control(A, cmd);
+    if (!busy(A)) A.facing = Math.sign(P.x - A.x) || A.facing;
+    physics(A, P);
+    const min = 88, dx = A.x - P.x;
+    if (Math.abs(dx) < min && Math.abs(A.y - P.y) < 120 && A.sp !== 'dive' && P.sp !== 'dive') A.x = Math.max(55, Math.min(W - 55, P.x + Math.sign(dx || 1) * min));
+  }
+  function adopt(hs) { for (const k of PRED) A[k] = Array.isArray(hs[k]) ? hs[k].slice() : hs[k]; A.s = CHARS[A.kind]; A.tx = A.ty = null; }
+  function reconcile(hs, gf) {
+    if (!A || A.kind !== hs.kind) { A = fromSnap(null, hs); A.tx = A.ty = null; return; }
+    for (const k of AUTH) A[k] = hs[k];
+    if (phase !== 'fight') { adopt(hs); return; }
+    const saved = hist.find(h => h.f === gf);
+    if (!saved) { adopt(hs); return; }
+    const ok = Math.abs(saved.x - hs.x) <= 12 && Math.abs(saved.y - hs.y) <= 12 && saved.state === hs.state && saved.sp === hs.sp && saved.move === hs.move && !!saved.blocking === !!hs.blocking && !!saved.crouch === !!hs.crouch;
+    if (ok) return;
+    const px = A.x, py = A.y;
+    adopt(hs);
+    for (const h of hist) if (h.f > gf) simOwn(h.cmd);     // replay what the host hasn't seen yet
+    A.ox = (A.ox || 0) + (px - A.x); A.oy = (A.oy || 0) + (py - A.y); // slide, don't teleport
+  }
   function applySnap(m) {
     phase = m.ph; phaseT = m.pt; round = m.r; wins = m.w; timer = m.tm; shake = Math.max(shake, m.sh); endText = m.et;
-    P = fromSnap(P, m.f[0]); A = fromSnap(A, m.f[1]);
+    P = fromSnap(P, m.f[0]);
+    reconcile(m.f[1], m.gf || 0);
     projectiles = m.pr.map(q => ({ ...q, owner: q.o === 0 ? P : A }));
   }
-  function guestTick() { // cosmetics only; the host owns the simulation
+  function guestTick() {
     frame++;
-    const k = net.transport === 'relay' ? 0.5 : 0.65;          // smooth out jitter / lower relay rate
-    for (const f of [P, A]) if (f.tx != null) { f.x += (f.tx - f.x) * k; f.y += (f.ty - f.y) * k; }
-    for (const f of [P, A]) if (f.state === 'taunt' && frame % 12 === 0) particles.push({ x: f.x + (Math.random() - 0.5) * 60, y: f.y - 230, vx: (Math.random() - 0.5) * 2, vy: -1.2, life: 40, col: '#ff8be0', kind: 'note', rot: 0 });
-    for (const f of [P, A]) if (f.burn > 0 && frame % 4 === 0) particles.push({ x: f.x + (Math.random() - 0.5) * 50, y: f.y - 60 - Math.random() * 150, vx: 0, vy: -1.5, life: 22, col: Math.random() < 0.5 ? '#ff7a00' : '#ffd23c', kind: 'spark' });
+    const k = net.transport === 'relay' ? 0.5 : 0.65;          // opponent: glide toward the reported position
+    if (P.tx != null) { P.x += (P.tx - P.x) * k; P.y += (P.ty - P.y) * k; }
+    if (phase === 'fight' && A.state !== 'ko') {               // me: predict
+      gFrame++;
+      const cmd = ownCmd();
+      simOwn(cmd);
+      hist.push({ f: gFrame, cmd, x: A.x, y: A.y, state: A.state, sp: A.sp, move: A.move, blocking: A.blocking, crouch: A.crouch });
+      if (hist.length > 180) hist.shift();
+      if (gFrame % 5 === 0) netSend({ t: 'f', f: gFrame });
+    } else input.jumpP = input.lightP = input.heavyP = input.sp1P = input.sp2P = false;
+    input.danceP = input.insultP = false;
+    for (const f of [P, A]) { if (f.ox) { f.ox *= 0.75; if (Math.abs(f.ox) < 0.5) f.ox = 0; } if (f.oy) { f.oy *= 0.75; if (Math.abs(f.oy) < 0.5) f.oy = 0; } }
+    if (P.state === 'taunt' && frame % 12 === 0) particles.push({ x: P.x + (Math.random() - 0.5) * 60, y: P.y - 230, vx: (Math.random() - 0.5) * 2, vy: -1.2, life: 40, col: '#ff8be0', kind: 'note', rot: 0 });
+    if (P.burn > 0 && frame % 4 === 0) particles.push({ x: P.x + (Math.random() - 0.5) * 50, y: P.y - 60 - Math.random() * 150, vx: 0, vy: -1.5, life: 22, col: Math.random() < 0.5 ? '#ff7a00' : '#ffd23c', kind: 'spark' });
     for (const q of projectiles) {
       if (q.kind === 'ember' && frame % 2 === 0) particles.push({ x: q.x, y: q.y, vx: -q.vx * 0.05, vy: -0.5, life: 14, col: '#ff5a00', kind: 'spark' });
       if (q.kind === 'dirt' && frame % 2 === 0) particles.push({ x: q.x + (Math.random() - 0.5) * q.r, y: q.y + (Math.random() - 0.5) * q.r, vx: q.vx * 0.3, vy: Math.random(), life: 18, col: '#6b4423', kind: 'fur', rot: Math.random() * 6 });
@@ -1395,6 +1444,8 @@
   // when P2P can't be punched through, carries the match. Match traffic otherwise runs over a direct
   // WebRTC DataChannel (P2P, or Cloudflare TURN at the nearest PoP via /turn credentials).
   const RELAY_URL = new URLSearchParams(location.search).get('relayUrl') || 'https://petuh-vs-kot.ifonpromax.deno.net';
+  const LAG = +(new URLSearchParams(location.search).get('lag') || 0); // test hook: ?lag=200 adds 200 ms round-trip
+  const lagged = (fn) => { if (LAG > 0) setTimeout(fn, LAG / 2); else fn(); };
   const FORCE_RELAY = /[?&]relay=1/.test(location.search);
   const RTC_WAIT = 8000; // host waits this long for P2P/TURN before settling on the WS relay
   let lastErr = null, guestTimer = null, snapSeq = 0, lastSeq = -1;
@@ -1414,11 +1465,11 @@
   function makeWs(code, role, h) {
     const ws = new WebSocket(RELAY_URL.replace(/^http/, 'ws') + `/room/${code}?role=${role}`);
     const link = { kind: 'relay', ws, open: false,
-      send(m) { if (ws.readyState === 1) try { ws.send(JSON.stringify(m)); } catch (e) {} },
+      send(m) { const s = JSON.stringify(m); lagged(() => { if (ws.readyState === 1) try { ws.send(s); } catch (e) {} }); },
       close() { this.open = false; try { ws.close(); } catch (e) {} },
     };
     ws.onopen = () => { link.open = true; h.open && h.open(); };
-    ws.onmessage = (e) => { if (e.data === 'hb') return; let m; try { m = JSON.parse(e.data); } catch (err) { return; } h.msg(m); };
+    ws.onmessage = (e) => { if (e.data === 'hb') return; let m; try { m = JSON.parse(e.data); } catch (err) { return; } lagged(() => h.msg(m)); };
     ws.onclose = (e) => { const was = link.open; link.open = false; h.close && h.close(was, e && e.code); };
     ws.onerror = () => {};
     return link;
@@ -1430,14 +1481,14 @@
     if (!window.RTCPeerConnection) return null;
     const pc = new RTCPeerConnection(cfg);
     const rc = { kind: 'rtc', open: false, pc, ctl: null, fast: null, remoteSet: false, pending: [], diag: { cands: new Set(), ice: 'new', conn: 'new' },
-      send(m) { if (this.ctl && this.ctl.readyState === 'open') try { this.ctl.send(JSON.stringify(m)); } catch (e) {} },
-      sendFast(m) { if (this.fast && this.fast.readyState === 'open') { try { this.fast.send(JSON.stringify(m)); } catch (e) {} } else this.send(m); },
+      send(m) { const s = JSON.stringify(m); lagged(() => { if (this.ctl && this.ctl.readyState === 'open') try { this.ctl.send(s); } catch (e) {} }); },
+      sendFast(m) { const s = JSON.stringify(m); lagged(() => { if (this.fast && this.fast.readyState === 'open') { try { this.fast.send(s); } catch (e) {} } else if (this.ctl && this.ctl.readyState === 'open') { try { this.ctl.send(s); } catch (e) {} } }); },
       close() { this.open = false; try { pc.close(); } catch (e) {} },
       async addIce(c) { if (!this.remoteSet) { this.pending.push(c); return; } try { await pc.addIceCandidate(c); } catch (e) {} },
       async setRemote(d) { await pc.setRemoteDescription(d); this.remoteSet = true; for (const c of this.pending.splice(0)) try { await pc.addIceCandidate(c); } catch (e) {} },
     };
     rc.wire = (ch) => {
-      ch.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch (err) { return; } onMsg(m); };
+      ch.onmessage = (e) => { let m; try { m = JSON.parse(e.data); } catch (err) { return; } lagged(() => onMsg(m)); };
       if (ch.label === 'ctl') {
         ch.onopen = () => { rc.open = true; onOpen(); };
         ch.onclose = () => { if (rc.open) { rc.open = false; onClose(); } };
@@ -1566,7 +1617,7 @@
   function startOnlineMatch() {
     if (document.hidden) { pendingStart = true; return; } // host is minimized: start when they come back
     show('lobby', false); show('result', false);
-    net.rin = { left: false, right: false, block: false, down: false }; net.redge = {}; net.ev = []; gotMsg();
+    net.rin = { left: false, right: false, block: false, down: false }; net.redge = {}; net.ev = []; net.gFrame = 0; gotMsg();
     netSend({ t: 'start', host: pick });
     newMatch();
   }
@@ -1574,7 +1625,9 @@
     if (!m || typeof m !== 'object') return;
     gotMsg();
     if (handlePing(m)) return;
+    if (m.t === 'f') { net.gFrame = Math.max(net.gFrame || 0, m.f || 0); return; } // guest's clock, echoed back in snapshots
     if (m.t === 'i') {
+      net.gFrame = Math.max(net.gFrame || 0, m.f || 0);
       if (['left', 'right', 'block', 'down'].includes(m.k)) net.rin[m.k] = !!m.on;
       else if (m.on && ['jump', 'light', 'heavy', 'sp1', 'sp2', 'dance', 'insult'].includes(m.k)) net.redge[m.k] = true;
     } else if (m.t === 'again' && phase === 'over') startOnlineMatch();
@@ -1660,7 +1713,7 @@
       clearTimeout(guestTimer);
       pick = m.host === 'rooster' ? 'cat' : 'rooster';
       SPECIALS[pick].forEach((sp, i) => { $('sp' + (i + 1) + 't').textContent = sp.label; });
-      particles = []; popups = []; projectiles = []; P = A = null; lastSeq = -1;
+      particles = []; popups = []; projectiles = []; P = A = null; lastSeq = -1; hist.length = 0; gFrame = 0;
       show('lobby', false); show('result', false); show('select', false);
     } else if (m.t === 's') {
       if (m.q != null && m.q <= lastSeq) return;   // late/out-of-order snapshot on the fast channel
@@ -1678,7 +1731,7 @@
   function leaveOnline() {
     const rc = net.rtc, ws = net.ws;
     net.role = null; net.conn = null; net.rtc = null; net.ws = null; net.transport = null; net.guestHere = false; net.myDiag = net.peerDiag = null; net.restarts = 0;
-    lastRecv = 0; pingMs = null; peerPaused = false; pendingStart = false;
+    lastRecv = 0; pingMs = null; peerPaused = false; pendingStart = false; hist.length = 0; gFrame = 0;
     clearTimeout(guestTimer);
     try { rc && rc.close(); } catch (e) {}
     try { ws && ws.close(); } catch (e) {}
