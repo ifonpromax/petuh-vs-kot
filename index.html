@@ -130,7 +130,7 @@
         <button data-d="1" class="sel">норм</button>
         <button data-d="2">колян</button>
       </div>
-      <div class="hint">◀ ▶ ходить · ▲ прыжок · ▼ присед (уклон от лёгких и бычка) · лёгкий/тяжёлый удар · держи блок · 2 спецприёма с перезарядкой. бой до 2 побед</div>
+      <div class="hint">◀ ▶ ходить · ▲ прыжок · ▼ присед (присед и прыжок спасают только от лёгких) · лёгкий/тяжёлый удар · держи блок · 2 спецприёма с перезарядкой. бой до 2 побед</div>
     </div>
 
     <div class="screen" id="result">
@@ -542,9 +542,7 @@
       if (q.owner === a) continue;
       const qd = (a.x - q.x) * Math.sign(q.vx);
       if (qd > 0 && qd < 230 && Math.random() < cfg.react * 0.18) {
-        if (q.kind === 'ember' && Math.random() < 0.55) a.ai.crouchHold = 26;
-        else if (q.kind === 'ember' && difficulty === 2 && Math.random() < 0.5) cmd.jump = true;
-        else a.ai.blockHold = 22 + Math.random() * 14;
+        a.ai.blockHold = 22 + Math.random() * 14;
       }
     }
     // dive incoming
@@ -701,11 +699,11 @@
     const reach = att.move === 'light' ? att.s.reachL : att.s.reachH;
     const dx = (def.x - att.x) * att.facing;
     if (dx < 0 || dx > reach + 30) return;
-    if (Math.abs(def.y - att.y) > 120) return;
     if (def.state === 'ko') return;
-    att.hitDone = true;
     const heavy = att.move === 'heavy';
-    if (def.crouch && !heavy) { popup(def.x, def.y - 150, 'МИМО', '#b6ffb0'); SFX.swing(); return; }
+    const dodged = def.crouch || Math.abs(def.y - att.y) > 120; // squat or jump only beats light hits
+    if (dodged && !heavy) { att.hitDone = true; popup(def.x, Math.min(def.y, GROUND) - 150, 'МИМО', '#b6ffb0'); SFX.swing(); return; }
+    att.hitDone = true;
     hurt(att, def, heavy ? att.s.heavy : att.s.light, {
       stun: m.hitstun, push: m.push, up: heavy ? -4 : 0, heavy,
       words: heavy ? ['БАМ!', 'ПОВ!', 'ХРЯСЬ!', 'ЕХАЛА ГАЗ!'] : ['ТЫЩ', 'БАЦ', 'ПАФ'],
@@ -719,8 +717,10 @@
       if (q.kind === 'ember' && q.life % 2 === 0) particles.push({ x: q.x, y: q.y, vx: -q.vx * 0.05, vy: -0.5, life: 14, col: Math.random() < 0.5 ? '#ff5a00' : '#bbb', kind: 'spark' });
       if (q.kind === 'dirt' && q.life % 2 === 0) particles.push({ x: q.x + (Math.random() - 0.5) * q.r, y: q.y + (Math.random() - 0.5) * q.r, vx: q.vx * 0.3, vy: Math.random(), life: 18, col: '#6b4423', kind: 'fur', rot: Math.random() * 6 });
       const def = q.owner === P ? A : P;
-      const top = def.crouch ? def.y - 150 : def.y - 245;
-      if (def.state !== 'ko' && Math.abs(q.x - def.x) < 42 + q.r && q.y > top && q.y < def.y - 10) {
+      // crouching or jumping never dodges projectiles: only blocking helps
+      const air = def.y < GROUND - 2;
+      const vOk = air || def.crouch || (q.y > def.y - 245 && q.y < def.y - 10);
+      if (def.state !== 'ko' && Math.abs(q.x - def.x) < 42 + q.r && vOk) {
         q.life = 0;
         const fx = { hx: q.x, hy: q.y };
         if (q.kind === 'egg') {
