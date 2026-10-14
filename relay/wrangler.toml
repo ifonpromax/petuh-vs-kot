@@ -1,0 +1,18 @@
+# NOTE: *.workers.dev TLS is blocked by Russian ISPs (DPI on SNI), so the game actually uses
+# the Deno Deploy port in ./deno/main.ts. This Worker is kept as an alternative deployment.
+name = "petuh-relay"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+[[durable_objects.bindings]]
+name = "ROOM"
+class_name = "Room"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Room"]
+
+# Secrets (set with `npx wrangler secret put NAME`), both optional:
+#   TURN_KEY_ID  — Cloudflare Realtime TURN key id
+#   TURN_TOKEN   — its API token
+# Without them /turn returns STUN only and matches use P2P or the WebSocket relay.
