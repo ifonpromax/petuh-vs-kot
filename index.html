@@ -182,7 +182,8 @@
       <div class="sub" id="lobbyTxt" style="max-width:420px;font-size:14px;white-space:pre-line"></div>
       <div class="title" id="lobbyCode" style="font-size:22px;color:#fff;margin:6px 0"></div>
       <div class="row">
-        <button class="big" id="share">📨 ПОЗВАТЬ ДРУГА</button>
+        <button class="big" id="copyLink">📋 СКОПИРОВАТЬ</button>
+        <button class="big alt" id="share">📨 ПЕРЕСЛАТЬ</button>
         <button class="big" id="retry" style="display:none">🔁 ПОВТОРИТЬ</button>
         <button class="big alt" id="lobbyBack">НАЗАД</button>
       </div>
@@ -1185,11 +1186,18 @@
     ctx.restore();
     if (P && A) {
       hud(ctx);
-      if (phase === 'intro') {
+      const stalled = net.role === 'guest' && lastSnapT && Date.now() - lastSnapT > 1500 && phase !== 'over';
+      const pausedView = !!(net.role && (peerPaused || stalled));
+      if (pausedView) {
+        ctx.fillStyle = 'rgba(10,4,20,.6)'; ctx.fillRect(0, 100, W, 300);
+        txt(ctx, '⏸ ПАУЗА', 400, 230, 56, '#ffd23c');
+        txt(ctx, peerPaused ? 'соперник свернул игру — ждём его' : 'связь подвисла — ждём соперника…', 400, 275, 22, '#fff');
+      }
+      if (phase === 'intro' && !pausedView) {
         if (phaseT < 65) txt(ctx, `РАУНД ${round}`, 400, 230, 64, '#fff');
         else { const s = 1 + Math.max(0, (80 - phaseT) / 30); txt(ctx, 'FIGHT!', 400, 240, 90 * Math.min(s, 1.6), '#ff3a2a'); }
       }
-      if (phase === 'end') {
+      if (phase === 'end' && !pausedView) {
         txt(ctx, endText, 400, 220, 90, '#ffd23c');
         const who = P.hp > A.hp ? P.s.name : A.hp > P.hp ? A.s.name : 'НИЧЬЯ';
         txt(ctx, who === 'НИЧЬЯ' ? who : `${who} ПОБЕЖДАЕТ`, 400, 275, 30, '#fff');
@@ -1203,6 +1211,7 @@
     const dt = 1000 / 60;
     while (acc >= dt) {
       if (net.role === 'guest') { if (P && A) guestTick(); }
+      else if (net.role === 'host' && peerPaused) { /* opponent minimized: freeze the fight */ }
       else if (P && phase !== 'over' && phase !== 'menu') step();
       acc -= dt;
     }
@@ -1277,16 +1286,29 @@
 
   function netSend(m) { try { if (net.conn && net.conn.open) net.conn.send(m); } catch (e) {} }
   // heartbeat: both sides ping every second; 6s of silence = opponent gone
-  let lastRecv = 0, pingMs = null;
+  let lastRecv = 0, pingMs = null, peerPaused = false, lastSnapT = 0, pendingStart = false;
   setInterval(() => {
     if (!net.role || !net.conn || !net.conn.open) return;
     netSend({ t: 'p', ts: performance.now() });
-    if (lastRecv && Date.now() - lastRecv > 6000) onPeerLeft();
+    // minimized Telegram freezes the page: be patient instead of dropping the match
+    const limit = peerPaused ? 90000 : 15000;
+    if (lastRecv && Date.now() - lastRecv > limit) onPeerLeft();
   }, 500);
   const gotMsg = () => { lastRecv = Date.now(); };
-  // returns true if the message was a ping/pong and is fully handled
+  document.addEventListener('visibilitychange', () => {
+    if (!net.role) return;
+    if (document.hidden) netSend({ t: 'pause' });
+    else {
+      lastRecv = Date.now(); netSend({ t: 'resume' });
+      if (pendingStart) { pendingStart = false; startOnlineMatch(); }
+    }
+  });
+  // returns true if the message was a ping/pong/pause and is fully handled
   function handlePing(m) {
+    if (m.t === 'pause') { peerPaused = true; return true; }
+    if (m.t === 'resume') { peerPaused = false; return true; }
     if (m.t === 'p') { netSend({ t: 'pp', ts: m.ts }); return true; }
+    if (m.t === 'i' || m.t === 's') peerPaused = false; // they're clearly back
     if (m.t === 'pp') {
       const rtt = performance.now() - m.ts;
       if (rtt >= 0 && rtt < 10000) pingMs = pingMs == null ? rtt : pingMs * 0.7 + rtt * 0.3;
@@ -1360,6 +1382,7 @@
     $('lobbyTxt').textContent = text;
     $('lobbyCode').textContent = code ? 'код комнаты: ' + code.toUpperCase() : '';
     $('share').style.display = canShare ? '' : 'none';
+    $('copyLink').style.display = canShare ? '' : 'none';
     $('retry').style.display = 'none';
   }
   function inviteLink() {
@@ -1426,7 +1449,7 @@
     const abc = 'abcdefghjkmnpqrstuvwxyz23456789';
     net.code = Array.from({ length: 5 }, () => abc[Math.floor(Math.random() * abc.length)]).join('');
     net.role = 'host'; net.transport = null; lastErr = null;
-    lobby('Отправь приглашение другу и жди. Как только он зайдёт — бой начнётся.', net.code, true);
+    lobby('Скопируй ссылку или код и скинь другу.\n⚠️ Не закрывай и не сворачивай игру, пока он не зайдёт — комната живёт только пока открыто это лобби.', net.code, true);
     const code = net.code;
     // PeerJS listener
     net.peer = makePeer('pvk-' + code, (type, msg) => {
@@ -1454,6 +1477,7 @@
     }, 12000);
   }
   function startOnlineMatch() {
+    if (document.hidden) { pendingStart = true; return; } // host is minimized: start when they come back
     show('lobby', false); show('result', false);
     net.rin = { left: false, right: false, block: false, down: false }; net.redge = {}; net.ev = []; gotMsg();
     netSend({ t: 'start', host: pick });
@@ -1505,9 +1529,15 @@
       setTimeout(startMqtt, 3000); // P2P too slow -> also try the relay
     } else startMqtt();
     clearTimeout(guestTimer);
-    guestTimer = setTimeout(() => {
-      if (net.role === 'guest' && net.code === code && !net.conn) netError((lastErr && lastErr[0]) || 'timeout', lastErr && lastErr[1]);
-    }, 20000);
+    const t0 = Date.now();
+    const waitTick = () => {
+      if (net.role !== 'guest' || net.code !== code || net.conn) return;
+      const s = (Date.now() - t0) / 1000;
+      if (s > 60) { netError((lastErr && lastErr[0]) || 'timeout', lastErr && lastErr[1]); return; }
+      if (s > 8) $('lobbyTxt').textContent = `Ждём хоста… (${Math.round(s)} с)\nЕсли друг свернул игру или ушёл в чат — пусть вернётся в неё, комната живёт только пока у него открыто лобби.`;
+      guestTimer = setTimeout(waitTick, 1000);
+    };
+    guestTimer = setTimeout(waitTick, 1000);
   }
   function dropPeer() { const p = net.peer; net.peer = null; try { p && p.destroy(); } catch (e) {} }
   function onGuestData(m) {
@@ -1520,7 +1550,7 @@
       SPECIALS[pick].forEach((sp, i) => { $('sp' + (i + 1) + 't').textContent = sp.label; });
       particles = []; popups = []; projectiles = []; P = A = null;
       show('lobby', false); show('result', false); show('select', false);
-    } else if (m.t === 's') applySnap(m);
+    } else if (m.t === 's') { lastSnapT = Date.now(); applySnap(m); }
     else if (m.t === 'r') { wins = m.w; showResult(1); }
   }
   function onPeerLeft() {
@@ -1531,7 +1561,7 @@
   }
   function leaveOnline() {
     const p = net.peer, mq = net.mq;
-    net.role = null; net.conn = null; net.peer = null; net.mq = null; net.transport = null; lastRecv = 0; pingMs = null;
+    net.role = null; net.conn = null; net.peer = null; net.mq = null; net.transport = null; lastRecv = 0; pingMs = null; peerPaused = false; pendingStart = false;
     clearTimeout(guestTimer);
     try { p && p.destroy(); } catch (e) {}
     try { mq && mq.close(); } catch (e) {}
@@ -1541,6 +1571,17 @@
     if (tg && tg.openTelegramLink) tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(text)}`);
     else if (navigator.share) navigator.share({ title: 'Петух vs Кот', text, url: link }).catch(() => {});
     else { try { navigator.clipboard.writeText(link); } catch (e) {} $('lobbyTxt').textContent = 'Ссылка скопирована: ' + link; }
+  });
+  $('copyLink').addEventListener('click', async () => {
+    const text = `Го драться: петух боец vs кот 🥊\n${inviteLink()}\nили код комнаты: ${net.code.toUpperCase()}`;
+    let ok = false;
+    try { await navigator.clipboard.writeText(text); ok = true; } catch (e) {}
+    if (!ok) { // old webviews: hidden textarea + execCommand
+      const ta = document.createElement('textarea'); ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select(); try { ok = document.execCommand('copy'); } catch (e) {} ta.remove();
+    }
+    $('copyLink').textContent = ok ? '✅ СКОПИРОВАНО' : '❌ НЕ ВЫШЛО — СКАЖИ КОД';
+    setTimeout(() => { $('copyLink').textContent = '📋 СКОПИРОВАТЬ'; }, 2500);
   });
   $('lobbyBack').addEventListener('click', () => { leaveOnline(); net.lastAction = null; toMenu(); });
   $('retry').addEventListener('click', () => { const a = net.lastAction; if (a) a(); });
