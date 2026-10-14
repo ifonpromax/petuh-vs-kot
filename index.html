@@ -178,10 +178,11 @@
 
     <div class="screen" id="lobby">
       <div class="title">⚔️ ОНЛАЙН</div>
-      <div class="sub" id="lobbyTxt" style="max-width:420px;font-size:14px"></div>
+      <div class="sub" id="lobbyTxt" style="max-width:420px;font-size:14px;white-space:pre-line"></div>
       <div class="title" id="lobbyCode" style="font-size:22px;color:#fff;margin:6px 0"></div>
       <div class="row">
         <button class="big" id="share">📨 ПОЗВАТЬ ДРУГА</button>
+        <button class="big" id="retry" style="display:none">🔁 ПОВТОРИТЬ</button>
         <button class="big alt" id="lobbyBack">НАЗАД</button>
       </div>
     </div>
@@ -1331,25 +1332,62 @@
     updateCosmetics(); updateSpButtons();
   }
 
+  const ERR_HINT = {
+    'peer-unavailable': 'Комната не найдена или друг уже вышел. Проверь код.',
+    'network': 'Нет связи с сервером-сводником (0.peerjs.com). Возможно, его режет провайдер или VPN.',
+    'server-error': 'Сервер-сводник (0.peerjs.com) не отвечает. Возможно, его режет провайдер или VPN.',
+    'socket-error': 'Не достучались до сервера-сводника (0.peerjs.com). Попробуй с VPN или без.',
+    'socket-closed': 'Связь с сервером-сводником оборвалась. Попробуй ещё раз.',
+    'browser-incompatible': 'Этот браузер/Telegram не умеет WebRTC. Попробуй открыть игру в Chrome.',
+    'webrtc': 'Прямое соединение не установилось — сеть не пускает. Попробуй другую сеть (Wi-Fi ↔ мобильный).',
+    'negotiation-failed': 'Прямое соединение не установилось — сеть не пускает. Попробуй другую сеть.',
+    'timeout': 'Друг не ответил за 15 секунд — прямое соединение не пробилось через сеть.',
+    'ice-failed': 'Прямое соединение не пробилось через сеть (NAT). Попробуй другую сеть.',
+    'no-peerjs': 'Не загрузился модуль связи (unpkg.com). Проверь интернет/VPN и открой игру заново.',
+  };
+  function netError(type, msg) {
+    const hint = ERR_HINT[type] || 'Не удалось соединиться 😿';
+    const wasRetry = net.lastAction;
+    leaveOnline(); net.lastAction = wasRetry;
+    lobby(`${hint}\n\nкод ошибки: ${type}${msg ? ' · ' + String(msg).slice(0, 80) : ''}`, '');
+    $('retry').style.display = net.lastAction ? '' : 'none';
+  }
   function lobby(text, code, canShare) {
-    show('select', false); show('result', false); show('lobby', true);
+    show('select', false); show('result', false); show('join', false); show('lobby', true);
     $('lobbyTxt').textContent = text;
     $('lobbyCode').textContent = code ? 'код комнаты: ' + code.toUpperCase() : '';
     $('share').style.display = canShare ? '' : 'none';
+    $('retry').style.display = 'none';
   }
   function inviteLink() {
     return BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?startapp=room_${net.code}` : `${location.origin}${location.pathname}?room=${net.code}`;
   }
   function makePeer(id) {
-    if (!window.Peer) { lobby('Не загрузился модуль связи. Проверь интернет и открой игру заново.', ''); return null; }
-    const p = id ? new window.Peer(id) : new window.Peer();
+    if (!window.Peer) { netError('no-peerjs'); return null; }
+    const opts = { config: { iceServers: [
+      { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] },
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      { urls: ['turn:openrelay.metered.ca:80', 'turn:openrelay.metered.ca:443', 'turn:openrelay.metered.ca:443?transport=tcp'], username: 'openrelayproject', credential: 'openrelayproject' },
+    ] } };
+    const p = id ? new window.Peer(id, opts) : new window.Peer(opts);
     p.on('error', (err) => {
-      if (err && err.type === 'unavailable-id' && net.role === 'host') { leaveOnline(); hostRoom(); return; }
-      lobby(err && err.type === 'peer-unavailable' ? 'Комната не найдена или друг уже вышел.' : 'Не удалось соединиться 😿 Попробуй ещё раз или другую сеть.', '');
+      const type = (err && err.type) || 'unknown';
+      console.warn('peer error', type, err && err.message);
+      if (type === 'unavailable-id' && net.role === 'host') { leaveOnline(); hostRoom(); return; }
+      netError(type, err && err.message);
     });
     return p;
   }
+  function watchIce(conn) { // report NAT failures instead of hanging silently
+    const t0 = Date.now();
+    const iv = setInterval(() => {
+      const pc = conn.peerConnection;
+      if (!net.role || conn.open || Date.now() - t0 > 20000) { clearInterval(iv); return; }
+      if (pc && (pc.iceConnectionState === 'failed' || pc.connectionState === 'failed')) { clearInterval(iv); netError('ice-failed'); }
+    }, 500);
+  }
   function hostRoom() {
+    net.lastAction = () => hostRoom();
     const abc = 'abcdefghjkmnpqrstuvwxyz23456789';
     net.code = Array.from({ length: 5 }, () => abc[Math.floor(Math.random() * abc.length)]).join('');
     net.role = 'host';
@@ -1359,6 +1397,7 @@
     net.peer.on('connection', (conn) => {
       if (net.conn && net.conn.open) { conn.close(); return; }
       net.conn = conn;
+      watchIce(conn);
       conn.on('open', () => { startOnlineMatch(); });
       conn.on('data', onHostData);
       conn.on('close', () => onPeerLeft());
@@ -1380,6 +1419,7 @@
     } else if (m.t === 'again' && phase === 'over') startOnlineMatch();
   }
   function joinRoom(code) {
+    net.lastAction = () => joinRoom(code);
     net.code = code; net.role = 'guest';
     lobby('Подключаемся к комнате…', code, false);
     net.peer = makePeer();
@@ -1387,8 +1427,9 @@
     net.peer.on('open', () => {
       const conn = net.peer.connect('pvk-' + code, { reliable: true });
       net.conn = conn;
-      const to = setTimeout(() => { if (!conn.open) lobby('Не получилось подключиться. Возможно, сеть не пускает прямое соединение 😿', code); }, 15000);
+      const to = setTimeout(() => { if (!conn.open && net.role === 'guest') netError('timeout'); }, 15000);
       conn.on('open', () => { clearTimeout(to); gotMsg(); });
+      watchIce(conn);
       conn.on('data', onGuestData);
       conn.on('close', () => onPeerLeft());
     });
@@ -1422,7 +1463,8 @@
     else if (navigator.share) navigator.share({ title: 'Петух vs Кот', text, url: link }).catch(() => {});
     else { try { navigator.clipboard.writeText(link); } catch (e) {} $('lobbyTxt').textContent = 'Ссылка скопирована: ' + link; }
   });
-  $('lobbyBack').addEventListener('click', () => { leaveOnline(); toMenu(); });
+  $('lobbyBack').addEventListener('click', () => { leaveOnline(); net.lastAction = null; toMenu(); });
+  $('retry').addEventListener('click', () => { const a = net.lastAction; if (a) a(); });
 
   // join by typing the room code
   const CODE_RE = /^[abcdefghjkmnpqrstuvwxyz23456789]{5}$/;
