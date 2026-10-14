@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Петух vs Кот</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 <style>
   :root {
     --bg: #14081f;
@@ -101,6 +102,7 @@
     box-shadow: 0 4px 0 #a47300;
   }
   .big.alt { background: #ffffff22; color: #fff; box-shadow: 0 4px 0 #0008; }
+  #online.sel { background: #e3263a; box-shadow: 0 4px 0 #7a0a16; }
   .diff { display: flex; gap: 6px; margin-top: 10px; font-family: "Segoe UI", sans-serif; font-size: 12px; }
   .diff button {
     font: inherit; color: #fff; background: #ffffff15; border: 2px solid #ffffff25; border-radius: 10px; padding: 6px 10px;
@@ -122,7 +124,7 @@
 
     <div class="screen show" id="select">
       <div class="title">ПЕТУХ vs КОТ</div>
-      <div class="sub">выбери бойца</div>
+      <div class="sub" id="selSub">выбери бойца</div>
       <div class="cards">
         <div class="card r" data-pick="rooster">
           <canvas width="220" height="220" id="pvR"></canvas>
@@ -140,7 +142,18 @@
         <button data-d="1" class="sel">норм</button>
         <button data-d="2">колян</button>
       </div>
+      <button class="big alt" id="online" style="margin-top:12px">⚔️ ИГРАТЬ С ДРУГОМ</button>
       <div class="hint">◀ ▶ ходить · ▲ прыжок · ▼ присед (присед и прыжок спасают только от лёгких) · лёгкий/тяжёлый удар · держи блок · 2 спецприёма с перезарядкой. бой до 2 побед</div>
+    </div>
+
+    <div class="screen" id="lobby">
+      <div class="title">⚔️ ОНЛАЙН</div>
+      <div class="sub" id="lobbyTxt" style="max-width:420px;font-size:14px"></div>
+      <div class="title" id="lobbyCode" style="font-size:22px;color:#fff;margin:6px 0"></div>
+      <div class="row">
+        <button class="big" id="share">📨 ПОЗВАТЬ ДРУГА</button>
+        <button class="big alt" id="lobbyBack">НАЗАД</button>
+      </div>
     </div>
 
     <div class="screen" id="result">
@@ -610,7 +623,7 @@
     round++;
     const other = pick === 'rooster' ? 'cat' : 'rooster';
     P = makeFighter(pick, 230, 1, false);
-    A = makeFighter(other, 570, -1, true);
+    A = makeFighter(other, 570, -1, net.role !== 'host');
     timer = 60 * 60; phase = 'intro'; phaseT = 0; particles = []; popups = []; projectiles = []; shake = 0;
     SPECIALS[pick].forEach((sp, i) => { document.getElementById('sp' + (i + 1) + 't').textContent = sp.label; });
     SFX.bell();
@@ -859,16 +872,37 @@
   }
 
   function splat(x, y, c1, c2) {
+    if (net.role === 'host') net.ev.push(['splat', x | 0, y | 0, c1, c2]);
     for (let i = 0; i < 12; i++) { const a = Math.random() * Math.PI * 2, v = 1 + Math.random() * 4; particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v - 1, life: 26, col: i % 3 ? c1 : c2, kind: 'fur', rot: a }); }
   }
   function spark(x, y, col, n) {
+    if (net.role === 'host') net.ev.push(['spark', x | 0, y | 0, col, n]);
     for (let i = 0; i < n; i++) { const a = Math.random() * Math.PI * 2, v = 2 + Math.random() * 5; particles.push({ x, y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, life: 18 + Math.random() * 10, col, kind: 'spark' }); }
   }
   function fluff(def, x, y) {
+    if (net.role === 'host') net.ev.push(['fluff', def.kind, x | 0, y | 0]);
     const cols = def.kind === 'rooster' ? ['#dc3c14', '#ffc828', '#0d7a56', '#14287a'] : ['#ff9628', '#ffe1aa', '#d25a0a'];
     for (let i = 0; i < 6; i++) particles.push({ x, y, vx: (Math.random() - 0.5) * 6, vy: -2 - Math.random() * 3, life: 50 + Math.random() * 30, col: cols[i % cols.length], kind: def.kind === 'rooster' ? 'feather' : 'fur', rot: Math.random() * 6 });
   }
-  function popup(x, y, text, col) { popups.push({ x, y, text, col, life: 40 }); }
+  function popup(x, y, text, col) { if (net.role === 'host') net.ev.push(['popup', x | 0, y | 0, text, col]); popups.push({ x, y, text, col, life: 40 }); }
+
+  function updateCosmetics() {
+    for (const q of particles) { q.x += q.vx; q.y += q.vy; q.vy += q.kind === 'spark' ? 0.25 : 0.06; q.vx *= q.kind === 'spark' ? 0.92 : 0.97; q.life--; if (q.rot != null) q.rot += 0.1; }
+    particles = particles.filter(q => q.life > 0);
+    if (particles.length > 400) particles.splice(0, particles.length - 400);
+    for (const q of popups) { q.y -= 0.8; q.life--; }
+    popups = popups.filter(q => q.life > 0);
+    if (shake > 0) shake *= 0.85;
+  }
+  function updateSpButtons() {
+    const me = myFighter();
+    if (!me || frame % 3 !== 0) return;
+    for (let i = 0; i < 2; i++) {
+      const el = spBtns[i], max = SPECIALS[me.kind][i].cd, v = Math.max(0, me.cd[i]) / max;
+      el.style.setProperty('--cd', v.toFixed(3)); el.classList.toggle('ready', v === 0);
+    }
+  }
+  const myFighter = () => (net.role === 'guest' ? A : P);
 
   function step() {
     frame++;
@@ -877,7 +911,7 @@
     const live = phase === 'fight';
     const pc = live ? { left: input.left, right: input.right, block: input.block, down: input.down, jump: input.jumpP, light: input.lightP, heavy: input.heavyP, sp1: input.sp1P, sp2: input.sp2P } : {};
     input.jumpP = input.lightP = input.heavyP = input.sp1P = input.sp2P = false;
-    if (live) { control(P, pc); control(A, aiThink(A, P)); }
+    if (live) { control(P, pc); control(A, net.role === 'host' ? remoteCmd() : aiThink(A, P)); }
     else { if (P.state !== 'special') P.vx = 0; if (A.state !== 'special') A.vx = 0; P.blocking = A.blocking = false; }
     if (!busy(P)) P.facing = Math.sign(A.x - P.x) || 1;
     if (!busy(A)) A.facing = Math.sign(P.x - A.x) || -1;
@@ -890,12 +924,7 @@
       P.x = Math.max(55, Math.min(W - 55, P.x)); A.x = Math.max(55, Math.min(W - 55, A.x));
     }
     if (live) { tryHit(P, A); tryHit(A, P); updateProjectiles(); }
-    for (const q of particles) { q.x += q.vx; q.y += q.vy; q.vy += q.kind === 'spark' ? 0.25 : 0.06; q.vx *= q.kind === 'spark' ? 0.92 : 0.97; q.life--; if (q.rot != null) q.rot += 0.1; }
-    particles = particles.filter(q => q.life > 0);
-    if (particles.length > 400) particles.splice(0, particles.length - 400);
-    for (const q of popups) { q.y -= 0.8; q.life--; }
-    popups = popups.filter(q => q.life > 0);
-    if (shake > 0) shake *= 0.85;
+    updateCosmetics();
     if (live) {
       timer--;
       if (P.hp <= 0 || A.hp <= 0 || timer <= 0) {
@@ -907,26 +936,25 @@
       }
     }
     if (phase === 'end' && phaseT > 140) {
-      if (wins[0] >= 2 || wins[1] >= 2 || round >= 5) showResult();
-      else startRound();
+      if (wins[0] >= 2 || wins[1] >= 2 || round >= 5) {
+        if (net.role === 'host') { net.ev = []; netSend({ t: 'r', w: wins }); }
+        showResult(0);
+      } else startRound();
     }
-    // special buttons cooldown UI
-    if (frame % 3 === 0) for (let i = 0; i < 2; i++) {
-      const el = spBtns[i], max = SPECIALS[P.kind][i].cd, v = Math.max(0, P.cd[i]) / max;
-      el.style.setProperty('--cd', v.toFixed(3)); el.classList.toggle('ready', v === 0);
-    }
+    updateSpButtons();
+    if (net.role === 'host') sendSnapshot();
   }
   const spBtns = [document.getElementById('sp1'), document.getElementById('sp2')];
   let endText = '';
 
-  function showResult() {
+  function showResult(me) {
     phase = 'over';
-    const win = wins[0] > wins[1];
+    const win = wins[me] > wins[1 - me];
     document.getElementById('resTitle').textContent = win ? 'ПОБЕДА!' : 'ПОТРАЧЕНО';
     const other = pick === 'rooster' ? 'cat' : 'rooster';
     const winner = win ? pick : other, loser = win ? other : pick;
     const any = (arr) => arr[Math.floor(Math.random() * arr.length)];
-    document.getElementById('resSub').textContent = `${wins[0]} : ${wins[1]}`;
+    document.getElementById('resSub').textContent = `${wins[me]} : ${wins[1 - me]}` + (net.role ? ' · онлайн' : '');
     const say = (id, kind, text) => {
       const el = document.getElementById(id); el.textContent = `«${text}»`;
       const b = document.createElement('b'); b.textContent = '— ' + CHARS[kind].name; el.appendChild(b);
@@ -1016,7 +1044,8 @@
     txt(c, String(Math.max(0, Math.ceil(timer / 60))), 400, 45, 30, '#fff', 'center', 4);
     if (P && P.state !== 'ko') {
       c.save(); c.globalAlpha = 0.9;
-      txt(c, 'ТЫ', P.x, Math.max(105, P.y - 245), 16, '#7cff6a', 'center', 4);
+      const me = myFighter();
+      txt(c, 'ТЫ', me.x, Math.max(105, me.y - 245), 16, '#7cff6a', 'center', 4);
       c.restore();
     }
   }
@@ -1061,7 +1090,11 @@
     if (!lastTs) lastTs = ts;
     acc += Math.min(100, ts - lastTs); lastTs = ts;
     const dt = 1000 / 60;
-    while (acc >= dt) { if (P && phase !== 'over' && phase !== 'menu') step(); acc -= dt; }
+    while (acc >= dt) {
+      if (net.role === 'guest') { if (P && A) guestTick(); }
+      else if (P && phase !== 'over' && phase !== 'menu') step();
+      acc -= dt;
+    }
     render();
     requestAnimationFrame(loop);
   }
@@ -1071,6 +1104,7 @@
   function setKey(k, on) {
     if (k === 'left' || k === 'right' || k === 'block' || k === 'down') input[k] = on;
     if (on && !held[k]) { if (k === 'jump') input.jumpP = true; if (k === 'light') input.lightP = true; if (k === 'heavy') input.heavyP = true; if (k === 'sp1') input.sp1P = true; if (k === 'sp2') input.sp2P = true; }
+    if (net.role === 'guest' && held[k] !== on) netSend({ t: 'i', k, on });
     held[k] = on;
   }
   const pointers = new Map();
@@ -1096,23 +1130,194 @@
       t++; if (document.getElementById('select').classList.contains('show')) requestAnimationFrame(anim); else setTimeout(() => requestAnimationFrame(anim), 300);
     })();
   }
+  const $ = (id) => document.getElementById(id);
+  const show = (id, on) => $(id).classList.toggle('show', on);
+  let wantOnline = false;
   document.querySelectorAll('[data-pick]').forEach(el => el.addEventListener('click', () => {
-    pick = el.dataset.pick; document.getElementById('select').classList.remove('show'); haptic('medium'); newMatch();
+    pick = el.dataset.pick; show('select', false); haptic('medium');
+    if (wantOnline) hostRoom(); else newMatch();
   }));
   document.querySelectorAll('#diff button').forEach(b => b.addEventListener('click', () => {
     document.querySelectorAll('#diff button').forEach(x => x.classList.remove('sel')); b.classList.add('sel'); difficulty = +b.dataset.d;
   }));
-  document.getElementById('again').addEventListener('click', () => { document.getElementById('result').classList.remove('show'); newMatch(); });
-  document.getElementById('change').addEventListener('click', () => { document.getElementById('result').classList.remove('show'); P = A = null; phase = 'menu'; document.getElementById('select').classList.add('show'); });
+  $('online').addEventListener('click', () => {
+    wantOnline = !wantOnline;
+    $('online').classList.toggle('sel', wantOnline);
+    $('selSub').textContent = wantOnline ? 'выбери своего бойца — друг получит второго' : 'выбери бойца';
+    $('diff').style.visibility = wantOnline ? 'hidden' : '';
+  });
+  $('again').addEventListener('click', () => {
+    show('result', false);
+    if (net.role === 'host') startOnlineMatch();
+    else if (net.role === 'guest') { netSend({ t: 'again' }); lobby('Ждём, пока соперник нажмёт «ещё раз»…', ''); }
+    else newMatch();
+  });
+  $('change').addEventListener('click', () => { show('result', false); leaveOnline(); toMenu(); });
+  function toMenu() { P = A = null; phase = 'menu'; show('lobby', false); show('select', true); }
+
+  // ================= ONLINE (PeerJS, host-authoritative) =================
+  const BOT_USERNAME = 'petuh_vs_kot_bot';
+  const net = { role: null, peer: null, conn: null, code: '', ev: [], rin: { left: false, right: false, block: false, down: false }, redge: {} };
+  const FIELDS = ['kind', 'x', 'y', 'vx', 'facing', 'hp', 'state', 'st', 'move', 'sp', 'walk', 't', 'blocking', 'crouch', 'stun', 'yolk', 'noCig', 'burn', 'dvx', 'dvy', 'landT', 'cd'];
+  const r1 = (v) => (typeof v === 'number' ? Math.round(v * 10) / 10 : v);
+
+  // mirror every sound / haptic the host makes to the guest
+  for (const k of Object.keys(SFX)) { const raw = SFX[k]; SFX[k] = (...a) => { raw(...a); if (net.role === 'host') net.ev.push(['sfx', k, a]); }; SFX[k].raw = raw; }
+
+  function netSend(m) { try { if (net.conn && net.conn.open) net.conn.send(m); } catch (e) {} }
+  // heartbeat: both sides ping every second; 6s of silence = opponent gone
+  let lastRecv = 0;
+  setInterval(() => {
+    if (!net.role || !net.conn || !net.conn.open) return;
+    netSend({ t: 'p' });
+    if (lastRecv && Date.now() - lastRecv > 6000) onPeerLeft();
+  }, 1000);
+  const gotMsg = () => { lastRecv = Date.now(); };
+  function remoteCmd() {
+    const c = { ...net.rin, jump: !!net.redge.jump, light: !!net.redge.light, heavy: !!net.redge.heavy, sp1: !!net.redge.sp1, sp2: !!net.redge.sp2 };
+    net.redge = {};
+    return c;
+  }
+  function sendSnapshot() {
+    const fs = [P, A].map(f => { const o = {}; for (const k of FIELDS) o[k] = Array.isArray(f[k]) ? f[k].slice() : r1(f[k]); return o; });
+    const pr = projectiles.map(q => ({ kind: q.kind, x: r1(q.x), y: r1(q.y), vx: q.vx, r: q.r, rot: r1(q.rot), o: q.owner === P ? 0 : 1 }));
+    netSend({ t: 's', ph: phase, pt: phaseT, r: round, w: wins, tm: timer, sh: r1(shake), et: endText, f: fs, pr, ev: net.ev });
+    net.ev = [];
+  }
+  function fromSnap(old, s) {
+    const f = old && old.kind === s.kind ? old : {};
+    Object.assign(f, s); f.s = CHARS[s.kind]; return f;
+  }
+  function applyEvent(e) {
+    const [t, a, b, c, d] = e;
+    if (t === 'sfx' && SFX[a]) SFX[a].raw(...(b || []));
+    else if (t === 'spark') spark(a, b, c, d);
+    else if (t === 'fluff') fluff({ kind: a }, b, c);
+    else if (t === 'splat') splat(a, b, c, d);
+    else if (t === 'popup') popup(a, b, c, d);
+  }
+  function applySnap(m) {
+    phase = m.ph; phaseT = m.pt; round = m.r; wins = m.w; timer = m.tm; shake = Math.max(shake, m.sh); endText = m.et;
+    P = fromSnap(P, m.f[0]); A = fromSnap(A, m.f[1]);
+    projectiles = m.pr.map(q => ({ ...q, owner: q.o === 0 ? P : A }));
+    for (const e of m.ev) applyEvent(e);
+    if (m.ev.some(e => e[0] === 'sfx' && (e[1] === 'heavy' || e[1] === 'boom' || e[1] === 'ko'))) haptic('heavy');
+  }
+  function guestTick() { // cosmetics only; the host owns the simulation
+    frame++;
+    for (const f of [P, A]) if (f.burn > 0 && frame % 4 === 0) particles.push({ x: f.x + (Math.random() - 0.5) * 50, y: f.y - 60 - Math.random() * 150, vx: 0, vy: -1.5, life: 22, col: Math.random() < 0.5 ? '#ff7a00' : '#ffd23c', kind: 'spark' });
+    for (const q of projectiles) {
+      if (q.kind === 'ember' && frame % 2 === 0) particles.push({ x: q.x, y: q.y, vx: -q.vx * 0.05, vy: -0.5, life: 14, col: '#ff5a00', kind: 'spark' });
+      if (q.kind === 'dirt' && frame % 2 === 0) particles.push({ x: q.x + (Math.random() - 0.5) * q.r, y: q.y + (Math.random() - 0.5) * q.r, vx: q.vx * 0.3, vy: Math.random(), life: 18, col: '#6b4423', kind: 'fur', rot: Math.random() * 6 });
+    }
+    updateCosmetics(); updateSpButtons();
+  }
+
+  function lobby(text, code, canShare) {
+    show('select', false); show('result', false); show('lobby', true);
+    $('lobbyTxt').textContent = text;
+    $('lobbyCode').textContent = code ? 'код комнаты: ' + code.toUpperCase() : '';
+    $('share').style.display = canShare ? '' : 'none';
+  }
+  function inviteLink() {
+    return BOT_USERNAME ? `https://t.me/${BOT_USERNAME}?startapp=room_${net.code}` : `${location.origin}${location.pathname}?room=${net.code}`;
+  }
+  function makePeer(id) {
+    if (!window.Peer) { lobby('Не загрузился модуль связи. Проверь интернет и открой игру заново.', ''); return null; }
+    const p = id ? new window.Peer(id) : new window.Peer();
+    p.on('error', (err) => {
+      if (err && err.type === 'unavailable-id' && net.role === 'host') { leaveOnline(); hostRoom(); return; }
+      lobby(err && err.type === 'peer-unavailable' ? 'Комната не найдена или друг уже вышел.' : 'Не удалось соединиться 😿 Попробуй ещё раз или другую сеть.', '');
+    });
+    return p;
+  }
+  function hostRoom() {
+    const abc = 'abcdefghjkmnpqrstuvwxyz23456789';
+    net.code = Array.from({ length: 5 }, () => abc[Math.floor(Math.random() * abc.length)]).join('');
+    net.role = 'host';
+    lobby('Отправь приглашение другу и жди. Как только он зайдёт — бой начнётся.', net.code, true);
+    net.peer = makePeer('pvk-' + net.code);
+    if (!net.peer) return;
+    net.peer.on('connection', (conn) => {
+      if (net.conn && net.conn.open) { conn.close(); return; }
+      net.conn = conn;
+      conn.on('open', () => { startOnlineMatch(); });
+      conn.on('data', onHostData);
+      conn.on('close', () => onPeerLeft());
+    });
+  }
+  function startOnlineMatch() {
+    show('lobby', false); show('result', false);
+    net.rin = { left: false, right: false, block: false, down: false }; net.redge = {}; net.ev = []; gotMsg();
+    netSend({ t: 'start', host: pick });
+    newMatch();
+  }
+  function onHostData(m) {
+    if (!m || typeof m !== 'object') return;
+    gotMsg();
+    if (m.t === 'i') {
+      if (['left', 'right', 'block', 'down'].includes(m.k)) net.rin[m.k] = !!m.on;
+      else if (m.on && ['jump', 'light', 'heavy', 'sp1', 'sp2'].includes(m.k)) net.redge[m.k] = true;
+    } else if (m.t === 'again' && phase === 'over') startOnlineMatch();
+  }
+  function joinRoom(code) {
+    net.code = code; net.role = 'guest';
+    lobby('Подключаемся к комнате…', code, false);
+    net.peer = makePeer();
+    if (!net.peer) return;
+    net.peer.on('open', () => {
+      const conn = net.peer.connect('pvk-' + code, { reliable: true });
+      net.conn = conn;
+      const to = setTimeout(() => { if (!conn.open) lobby('Не получилось подключиться. Возможно, сеть не пускает прямое соединение 😿', code); }, 15000);
+      conn.on('open', () => { clearTimeout(to); gotMsg(); });
+      conn.on('data', onGuestData);
+      conn.on('close', () => onPeerLeft());
+    });
+  }
+  function onGuestData(m) {
+    if (!m || typeof m !== 'object') return;
+    gotMsg();
+    if (m.t === 'start') {
+      pick = m.host === 'rooster' ? 'cat' : 'rooster';
+      SPECIALS[pick].forEach((sp, i) => { $('sp' + (i + 1) + 't').textContent = sp.label; });
+      particles = []; popups = []; projectiles = []; P = A = null;
+      show('lobby', false); show('result', false); show('select', false);
+    } else if (m.t === 's') applySnap(m);
+    else if (m.t === 'r') { wins = m.w; showResult(1); }
+  }
+  function onPeerLeft() {
+    if (!net.role) return;
+    leaveOnline();
+    P = A = null; phase = 'menu';
+    lobby('Соперник отключился 🚪', '');
+  }
+  function leaveOnline() {
+    const p = net.peer;
+    net.role = null; net.conn = null; net.peer = null; lastRecv = 0;
+    try { p && p.destroy(); } catch (e) {}
+  }
+  $('share').addEventListener('click', () => {
+    const link = inviteLink(), text = 'Го драться: петух боец vs кот 🥊 Заходи в мою комнату!';
+    if (tg && tg.openTelegramLink) tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(text)}`);
+    else if (navigator.share) navigator.share({ title: 'Петух vs Кот', text, url: link }).catch(() => {});
+    else { try { navigator.clipboard.writeText(link); } catch (e) {} $('lobbyTxt').textContent = 'Ссылка скопирована: ' + link; }
+  });
+  $('lobbyBack').addEventListener('click', () => { leaveOnline(); toMenu(); });
+
+  // auto-join when opened from an invite (?room=xxxxx or Telegram startapp=room_xxxxx)
+  const startParam = (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param) || '';
+  const roomFromUrl = new URLSearchParams(location.search).get('room') || (startParam.startsWith('room_') ? startParam.slice(5) : '');
 
   // debug hook for testing without rAF (hidden tabs)
   window.__fight = {
-    tick(n) { for (let i = 0; i < n; i++) if (P && phase !== 'over' && phase !== 'menu') step(); render(); },
+    net,
+    tick(n) { for (let i = 0; i < n; i++) { if (net.role === 'guest') { if (P && A) guestTick(); } else if (P && phase !== 'over' && phase !== 'menu') step(); } render(); },
     key: setKey,
     get s() { const o = f => ({ x: Math.round(f.x), y: Math.round(f.y), hp: f.hp, st: f.state + (f.sp ? ':' + f.sp : '') + (f.crouch ? ':crouch' : ''), cd: f.cd.slice(), yolk: f.yolk, burn: f.burn }); return P && { phase, round, wins, timer, proj: projectiles.length, P: o(P), A: o(A) }; },
   };
   fitCanvas(); buildBg(); preview('pvR', 'rooster'); preview('pvC', 'cat');
   phase = 'menu';
+  if (/^[a-z0-9]{5}$/.test(roomFromUrl)) joinRoom(roomFromUrl);
   requestAnimationFrame(loop);
 })();
 </script>
